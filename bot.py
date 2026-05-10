@@ -588,6 +588,7 @@ async def show_history(message: types.Message):
         rating_str = f" {'⭐'*rating_value}" if rating_value else ""
         text += (f"🚕 {o[8][:10]}\n📍 {o[4]} → {o[5]}\n"
                  f"Статус: {o[3]}{rating_str}\n\n")
+    await message.answer(text, parse_mode="HTML")
 
 # ========== ЗАПУСК ==========
 async def main():
