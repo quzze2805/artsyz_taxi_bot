@@ -162,3 +162,17 @@ def admin_menu():
         ],
         resize_keyboard=True
     )
+
+def confirm_cancel_kb(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, отменить", callback_data=f"confirm_cancel_{order_id}")],
+            [InlineKeyboardButton(text="❌ Нет", callback_data=f"decline_cancel_{order_id}")],
+        ]
+    )
+
+def searching_driver_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отменить заказ")]],
+        resize_keyboard=True
+    )

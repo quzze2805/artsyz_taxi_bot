@@ -264,6 +264,14 @@ async def location_handler(message: types.Message):
         else:
             await message.answer("✅ Геопозиция отправлена клиенту.", reply_markup=driver_order_actions(get_driver_current_order(uid)))
         return
+        # адрес назначения по гео
+    if uid in user_state and user_state[uid].get("step") == "waiting_to_geo":
+        lat, lon = message.location.latitude, message.location.longitude
+        user_state[uid]["to_address"] = f"📍 точка на карте ({lat:.5f}, {lon:.5f})"
+        user_state[uid]["to_lat"], user_state[uid]["to_lon"] = lat, lon
+        user_state[uid]["step"] = "confirm"
+        await confirm_order_step(message)
+        return
     # адрес подачи
     if uid in user_state and user_state[uid].get("step") in ("from_address", "waiting_from_text"):
         lat, lon = message.location.latitude, message.location.longitude
@@ -335,7 +343,7 @@ async def confirm_no_discount(message: types.Message):
 @dp.message(F.text == "✅ Подтвердить заказ")
 async def confirm_order_client(message: types.Message):
     uid = message.from_user.id
-    state = user_state.pop(uid, None)
+    state = user_state.get(uid)
     if not state:
         return
     order_id = add_order(uid, state["from_address"], state.get("from_lat"), state.get("from_lon"),
@@ -363,14 +371,62 @@ async def confirm_order_client(message: types.Message):
                 await bot.send_location(driver_id, latitude=state["from_lat"], longitude=state["from_lon"])
         except Exception as e:
             logging.error(f"Failed to notify driver {driver_id}: {e}")
-    await message.answer("⏳ Ищем автомобиль...", reply_markup=main_menu())
-
-@dp.message(F.text == "❌ Отменить")
-async def cancel_order_creation(message: types.Message):
-    uid = message.from_user.id
+    await message.answer("⏳ Ищем ближайший автомобиль...", reply_markup=searching_driver_kb())
     if uid in user_state:
-        del user_state[uid]
-    await message.answer("🚫 Заказ отменён.", reply_markup=main_menu())
+        phone = user_state[uid].get("phone")
+        user_state[uid] = {"phone": phone, "step": "from_address"}
+
+@dp.message(F.text == "❌ Отменить заказ")
+async def cancel_searching_order_prompt(message: types.Message):
+    uid = message.from_user.id
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute(
+        "SELECT id FROM orders WHERE client_id=? AND status='searching' ORDER BY id DESC LIMIT 1",
+        (uid,)
+    )
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await message.answer("Нет активного поиска.", reply_markup=main_menu())
+        return
+    order_id = row[0]
+    await message.answer(
+        "Вы действительно хотите отменить поиск?",
+        reply_markup=confirm_cancel_kb(order_id)
+    )
+
+@dp.message(F.text == "❌ Отменить поездку")
+async def client_cancel_ride_prompt(message: types.Message):
+    client_id = message.from_user.id
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute("SELECT id FROM orders WHERE client_id=? AND status='accepted' ORDER BY id DESC LIMIT 1", (client_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await message.answer("Нет активного заказа для отмены.")
+        return
+    order_id = row[0]
+    await message.answer(
+        "Вы действительно хотите отменить поездку?",
+        reply_markup=confirm_cancel_kb(order_id)
+    )
+
+@dp.message(F.text == "⬅ Изменить")
+async def change_order(message: types.Message):
+    uid = message.from_user.id
+    if uid not in user_state:
+        await message.answer("Вы не находитесь в процессе заказа.", reply_markup=main_menu())
+        return
+    # Возвращаемся к шагу выбора адреса назначения
+    user_state[uid]["step"] = "to_address"
+    # Удаляем ранее введённый конечный адрес и скидку
+    user_state[uid].pop("to_address", None)
+    user_state[uid].pop("to_lat", None); user_state[uid].pop("to_lon", None)
+    user_state[uid].pop("discount_applied", None)
+    await message.answer("🏁 <b>Куда едем?</b>\nВыберите популярное место или укажите свой вариант.",
+                         parse_mode="HTML", reply_markup=to_location_method())
 
 @dp.message(F.text == "⬅ Назад")
 async def go_back(message: types.Message):
@@ -434,6 +490,7 @@ async def bonus_back(message: types.Message):
     # Если пользователь был в контексте бонусов, возвращаем его в главное меню
     # user_state не используется, поэтому просто показываем главное меню
     await message.answer("Возврат в главное меню.", reply_markup=main_menu())
+
 
 # ========== Чат с водителем ==========
 @dp.message(F.text == "💬 Сообщение водителю")
@@ -767,14 +824,17 @@ async def client_fast_reply(message: types.Message):
 
 @dp.callback_query(lambda c: c.data.startswith("rate_"))
 async def rate_order(callback: types.CallbackQuery):
-    _, order_id, stars = callback.data.split("_")
-    order_id, stars = int(order_id), int(stars)
-    conn = sqlite3.connect("taxi.db")
-    c = conn.cursor()
-    c.execute('UPDATE orders SET rating=? WHERE id=?', (stars, order_id))
-    conn.commit()
-    conn.close()
-    await callback.message.edit_text(f"Спасибо! Оценка: {'⭐'*stars} ({stars})")
+    try:
+        _, order_id, stars = callback.data.split("_")
+        order_id, stars = int(order_id), int(stars)
+        conn = sqlite3.connect("taxi.db")
+        c = conn.cursor()
+        c.execute('UPDATE orders SET rating=? WHERE id=?', (stars, order_id))
+        conn.commit()
+        conn.close()
+        await callback.message.edit_text(f"Спасибо! Оценка: {'⭐'*stars} ({stars})")
+    except Exception:
+        pass  # игнорируем устаревшие query
     await callback.answer()
 
 @dp.message(F.text == "📋 Мои поездки")
