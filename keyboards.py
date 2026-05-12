@@ -112,3 +112,15 @@ def driver_order_actions(order_id):
             [InlineKeyboardButton(text="🛑 Завершить поездку", callback_data=f"finish_{order_id}")],
         ]
     )
+
+# ====== Админ-меню ======
+def admin_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Добавить водителя")],
+            [KeyboardButton(text="➖ Удалить водителя")],
+            [KeyboardButton(text="📋 Список водителей")],
+            [KeyboardButton(text="🔙 Выйти из админки")],
+        ],
+        resize_keyboard=True
+    )
