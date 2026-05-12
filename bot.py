@@ -163,7 +163,7 @@ async def driver_registration(message: types.Message):
     if state["step"] == "ask_name":
         state["name"] = message.text.strip()
         state["step"] = "ask_phone"
-        await message.answer("📞 Отправьте ваш номер телефона (кнопкой ниже или введите вручную в формате +79...)",
+        await message.answer("📞 Отправьте ваш номер телефона (кнопкой ниже или введите вручную в формате +380-XX-XXX-XX-XX)",
                              reply_markup=ReplyKeyboardMarkup(
                                  keyboard=[[KeyboardButton(text="📱 Поделиться номером", request_contact=True)]],
                                  resize_keyboard=True))
@@ -173,8 +173,9 @@ async def driver_registration(message: types.Message):
             phone = message.contact.phone_number
         else:
             text = message.text.strip()
-            if text.startswith("+") and len(text) >= 10:
-                phone = text
+            clean = text.replace('-', '').replace(' ', '')
+            if clean.startswith("+380") and len(clean) == 13:
+                phone = clean
             else:
                 await message.answer("⚠️ Пожалуйста, отправьте номер через кнопку или введите в формате +79XXXXXXXXX")
                 return
@@ -316,15 +317,65 @@ async def review_receive_text(message: types.Message):
     uid = message.from_user.id
     order_id = review_state.pop(uid, None)
     if not order_id:
-        return  # не в состоянии отзыва, ничего не делаем
+        return
+
     review_text = message.text.strip()
     if not review_text:
         await message.answer("Отзыв не может быть пустым. Попробуйте ещё раз или нажмите «⏭ Пропустить».")
-        # возвращаем состояние обратно, чтобы пользователь мог попробовать снова
         review_state[uid] = order_id
         return
+
+    # Сохраняем отзыв
     save_review(order_id, review_text)
+
+    # Благодарим клиента и возвращаем в главное меню
     await message.answer("Спасибо за ваш отзыв! Он помогает нам становиться лучше.", reply_markup=main_menu())
+
+    # --- Отправляем уведомление администраторам ---
+    try:
+        order = get_order(order_id)
+        if order:
+            driver_info = "не указан"
+            if order[9]:  # driver_info в JSON
+                try:
+                    import json
+                    d = json.loads(order[9])
+                    driver_info = f"{d.get('name', '?')} ({d.get('car', '?')}, {d.get('plate', '?')})"
+                except:
+                    pass
+
+            rating = order[13] if len(order) > 13 and order[13] else "без оценки"
+
+            # Преобразуем finished_at (UTC) в киевское время
+            from datetime import datetime, timedelta
+            finished_at_str = order[12] if len(order) > 12 and order[12] else None
+            if finished_at_str:
+                dt_utc = datetime.fromisoformat(finished_at_str)
+                dt_kiev = dt_utc + timedelta(hours=3)
+                finished_display = dt_kiev.strftime('%d.%m.%Y %H:%M')
+            else:
+                finished_display = '?'
+
+            admin_msg = (
+                "📢 <b>Новый отзыв!</b>\n"
+                f"🆔 Заказ №: <code>{order_id}</code>\n"
+                f"👤 Клиент: <code>{uid}</code>\n"
+                f"📞 Телефон: {order[8] or 'не указан'}\n"
+                f"📍 Откуда: {order[4]}\n"
+                f"🏁 Куда: {order[7]}\n"
+                f"🚖 Водитель: {driver_info}\n"
+                f"⭐ Оценка: {rating}\n"
+                f"💬 Отзыв: {review_text}\n"
+                f"🕒 Время завершения: {finished_display}"
+            )
+
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(admin_id, admin_msg, parse_mode="HTML")
+                except:
+                    pass
+    except Exception as e:
+        logging.error(f"Failed to notify admins about review: {e}")
 
 # ---------- Отзывы ----------
 @dp.message(F.text == "✍️ Оставить отзыв")
