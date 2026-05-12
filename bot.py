@@ -229,14 +229,12 @@ async def manual_from(message: types.Message):
     user_state[uid]["step"] = "waiting_from_text"
     await message.answer("Напишите адрес подачи:", reply_markup=back_only_keyboard())
 
-@dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "waiting_from_text")
-async def get_from_text(message: types.Message):
+@dp.message(lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "waiting_to_text")
+async def get_to_text(message: types.Message):
     uid = message.from_user.id
-    user_state[uid]["from_address"] = message.text
-    user_state[uid]["from_lat"] = user_state[uid]["from_lon"] = None
-    user_state[uid]["step"] = "to_address"
-    await message.answer(f"Адрес подачи: «{message.text}»")
-    await ask_destination(message)
+    user_state[uid]["to_address"] = message.text
+    user_state[uid]["step"] = "confirm"
+    await confirm_order_step(message)
 
 @dp.message(F.location)
 async def location_handler(message: types.Message):
@@ -291,7 +289,7 @@ async def manual_to(message: types.Message):
     user_state[uid]["step"] = "waiting_to_text"
     await message.answer("Напишите адрес назначения:", reply_markup=back_only_keyboard())
 
-@dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "waiting_to_text")
+@dp.message(lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "waiting_to_text")
 async def get_to_text(message: types.Message):
     uid = message.from_user.id
     user_state[uid]["to_address"] = message.text
@@ -404,6 +402,12 @@ async def invite_friend(message: types.Message):
         reply_markup=bonus_menu()
     )
 
+@dp.message(F.text == "🔙 Назад")
+async def bonus_back(message: types.Message):
+    # Если пользователь был в контексте бонусов, возвращаем его в главное меню
+    # user_state не используется, поэтому просто показываем главное меню
+    await message.answer("Возврат в главное меню.", reply_markup=main_menu())
+
 # ========== Чат с водителем ==========
 @dp.message(F.text == "💬 Сообщение водителю")
 async def client_open_chat(message: types.Message):
@@ -421,23 +425,65 @@ async def client_open_chat(message: types.Message):
     chat_sessions[driver_id] = (uid, 'driver')
     await message.answer("💬 Чат с водителем открыт. Отправьте сообщение, фото или голосовое. Для выхода нажмите «Завершить чат».",
                          reply_markup=client_chat_active())
+    # Уведомление водителю
+    try:
+        await bot.send_message(driver_id, "_Пассажир открыл чат. Теперь вы можете общаться здесь._", parse_mode="Markdown")
+    except:
+        pass
 
 @dp.message(F.text == "🔕 Завершить чат")
 async def close_chat(message: types.Message):
     uid = message.from_user.id
-    if uid in chat_sessions:
-        target_id, _ = chat_sessions[uid]
-        chat_sessions.pop(uid, None)
-        chat_sessions.pop(target_id, None)
-    await message.answer("Чат завершён.", reply_markup=client_driver_found())
+    if uid not in chat_sessions:
+        await message.answer("Чат не активен.")
+        return
 
-@dp.message(lambda msg: msg.from_user.id in chat_sessions, content_types=types.ContentType.ANY)
+    target_id, role = chat_sessions[uid]
+    chat_sessions.pop(uid, None)
+    chat_sessions.pop(target_id, None)
+
+    if role == 'client':
+        # Уведомляем водителя
+        try:
+            order_id = get_driver_current_order(target_id)
+            await bot.send_message(target_id, "_Пассажир завершил чат._", parse_mode="Markdown")
+            await bot.send_message(target_id, "Чат закрыт.", reply_markup=driver_order_actions(order_id) if order_id else driver_main())
+        except:
+            pass
+        await message.answer("Чат завершён.", reply_markup=client_driver_found())
+    else:  # role == 'driver'
+        # Уведомляем клиента
+        try:
+            conn = sqlite3.connect("taxi.db")
+            c = conn.cursor()
+            c.execute("SELECT id FROM orders WHERE client_id=? AND status='accepted' ORDER BY id DESC LIMIT 1", (target_id,))
+            row = c.fetchone()
+            conn.close()
+            if row:
+                await bot.send_message(target_id, "_Водитель завершил чат._", parse_mode="Markdown")
+                await bot.send_message(target_id, "Чат закрыт.", reply_markup=client_driver_found())
+        except:
+            pass
+        order_id = get_driver_current_order(uid)
+        await message.answer("Чат завершён.", reply_markup=driver_order_actions(order_id) if order_id else driver_main())
+
+@dp.message(lambda msg: msg.from_user.id in chat_sessions)
 async def relay_chat_message(message: types.Message):
     uid = message.from_user.id
     target_id, role = chat_sessions[uid]
+    prefix = "_Водитель:_ " if role == 'driver' else "_Пассажир:_ "
     try:
-        await message.copy_to(target_id)
-    except:
+        if message.text:
+            await bot.send_message(target_id, prefix + message.text, parse_mode="Markdown")
+        elif message.caption:
+            # Если медиа с подписью, отправляем медиа с новой подписью
+            await message.copy_to(target_id, caption=prefix + message.caption)
+        else:
+            # Фото, голосовое, видео без подписи – сначала шлём текст, потом медиа
+            await bot.send_message(target_id, prefix, parse_mode="Markdown")
+            await message.copy_to(target_id)
+    except Exception as e:
+        logging.error(f"Chat relay error: {e}")
         await message.answer("❌ Не удалось доставить сообщение.")
 
 # --- Аналогично для водителя ---
@@ -454,12 +500,22 @@ async def driver_open_chat(callback: types.CallbackQuery):
     chat_sessions[client_id] = (driver_id, 'client')
     await bot.send_message(driver_id, "💬 Чат с клиентом открыт. Отправьте сообщение. Для выхода нажмите «Завершить чат».",
                            reply_markup=driver_chat_active())
+    # Уведомление клиенту
+    try:
+        await bot.send_message(client_id, "_Водитель открыл чат. Теперь вы можете общаться здесь._", parse_mode="Markdown")
+    except:
+        pass
     await callback.answer()
 
 @dp.message(F.text == "🔕 Завершить чат")  # для водителя
 async def driver_close_chat(message: types.Message):
-    await close_chat(message)
-    await message.answer("Чат завершён.", reply_markup=driver_order_actions(get_driver_current_order(message.from_user.id)))
+    uid = message.from_user.id
+    if uid in chat_sessions:
+        target_id, _ = chat_sessions[uid]
+        chat_sessions.pop(uid, None)
+        chat_sessions.pop(target_id, None)
+    order_id = get_driver_current_order(uid)
+    await message.answer("Чат завершён.", reply_markup=driver_order_actions(order_id) if order_id else driver_main())
 
 # ========== Остальные обработчики заказа (accept, decline, loc, arrived, finish) ==========
 # (оставлены без изменений, но для finish добавим лояльность)
@@ -556,6 +612,66 @@ async def driver_finish(callback: types.CallbackQuery):
     await bot.send_message(client_id, "Оцените поездку:", reply_markup=rating_keyboard(order_id))
     await callback.message.edit_text("Поездка завершена. Ожидайте новый заказ.")
     await callback.answer()
+    chat_sessions.pop(client_id, None)
+    chat_sessions.pop(driver_id, None)
+
+# ========== Кнопки активного заказа (клиент) ==========
+@dp.message(F.text == "📞 Контакты водителя")
+async def show_driver_contacts(message: types.Message):
+    # Ищем активный заказ
+    client_id = message.from_user.id
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute("SELECT driver_info FROM orders WHERE client_id=? AND status='accepted' ORDER BY id DESC LIMIT 1", (client_id,))
+    row = c.fetchone()
+    conn.close()
+    if row and row[0]:
+        try:
+            info = json.loads(row[0])
+            contact_msg = f"📞 Телефон: {info.get('phone', 'не указан')}\n💬 Telegram: {TELEGRAM_CONTACT}"
+        except:
+            contact_msg = f"📞 Телефон: +38 075 443 67 57\n💬 Telegram: {TELEGRAM_CONTACT}"
+    else:
+        contact_msg = f"📞 Телефон: +38 075 443 67 57\n💬 Telegram: {TELEGRAM_CONTACT}"
+    await message.answer(contact_msg, reply_markup=client_driver_found())
+
+@dp.message(F.text == "📡 Отправить геопозицию")
+async def client_send_geo_prompt(message: types.Message):
+    client_id = message.from_user.id
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute("SELECT id, driver_id FROM orders WHERE client_id=? AND status='accepted' ORDER BY id DESC LIMIT 1", (client_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await message.answer("Нет активного заказа.")
+        return
+    order_id, driver_id = row
+    pending_client_geo[client_id] = driver_id
+    await message.answer("📡 Отправьте ваше текущее местоположение через кнопку ниже.",
+                         reply_markup=request_location_kb())
+
+@dp.message(F.text == "❌ Отменить поездку")
+async def client_cancel_ride(message: types.Message):
+    client_id = message.from_user.id
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute("SELECT id, driver_id, status FROM orders WHERE client_id=? AND status='accepted' ORDER BY id DESC LIMIT 1", (client_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await message.answer("Нет активного заказа для отмены.")
+        return
+    order_id, driver_id, status = row
+    cancel_order(order_id)
+    try:
+        await bot.send_message(driver_id, f"❌ Клиент отменил поездку (заказ #{order_id}).")
+    except:
+        pass
+    await message.answer("🚫 Поездка отменена.", reply_markup=main_menu())
+    # Очистка возможных состояний
+    pending_client_geo.pop(client_id, None)
+    pending_driver_geo.pop(driver_id, None)
     chat_sessions.pop(client_id, None)
     chat_sessions.pop(driver_id, None)
 
