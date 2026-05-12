@@ -1,20 +1,12 @@
-# config.py
 BOT_TOKEN = "8528699146:AAGHQin9dVodLOT6WrsU1FBVKizX-3_eaFU"
-LOGO_FILE_ID = "AgACAgIAAxkBAAMFagAB7cgfiSMeP6SOy67yjD1Dwt2EAAI5FWsbzVsISKs2czxrQTDxAQADAgADeQADOwQ"  # после отправки картинки
+LOGO_FILE_ID = "LOGO_FILE_ID = "AgACAgIAAxkBAAICnWoCQKX2-5Mlyy7GDBt6offouejTAAInFGsb8uYZSMHK3MuOSqxAAQADAgADeQADOwQ""
 
-# Поддержка
-SUPPORT_PHONE = "+38 075 443 67 5 7"
+SUPPORT_PHONE = "+380754436757"
 SERVICE_NAME = "TaxiService"
 TELEGRAM_CONTACT = "@taxi_artsyz"
 
-# ID водителей (список Telegram user_id)
-DRIVERS = [
-    8645863305,  # Александр
-    987654321,  # Мария
-    # добавь остальных
-]
+ADMIN_IDS = [587327291]
 
-# Популярные места для быстрых кнопок
 POPULAR_PLACES = {
     "Центр": "Центр",
     "Вокзал": "Железнодорожный вокзал",
