@@ -428,6 +428,13 @@ async def change_order(message: types.Message):
     await message.answer("🏁 <b>Куда едем?</b>\nВыберите популярное место или укажите свой вариант.",
                          parse_mode="HTML", reply_markup=to_location_method())
 
+@dp.message(F.text == "❌ Отменить")
+async def cancel_order_creation(message: types.Message):
+    uid = message.from_user.id
+    if uid in user_state:
+        del user_state[uid]
+    await message.answer("🚫 Заказ отменён.", reply_markup=main_menu())
+
 @dp.message(F.text == "⬅ Назад")
 async def go_back(message: types.Message):
     uid = message.from_user.id
@@ -835,6 +842,78 @@ async def rate_order(callback: types.CallbackQuery):
         await callback.message.edit_text(f"Спасибо! Оценка: {'⭐'*stars} ({stars})")
     except Exception:
         pass  # игнорируем устаревшие query
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("confirm_cancel_"))
+async def confirm_cancel_callback(callback: types.CallbackQuery):
+    try:
+        order_id = int(callback.data.split("_")[2])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка идентификатора заказа.", show_alert=True)
+        return
+
+    order = get_order(order_id)
+    if not order:
+        await callback.answer("Заказ уже не существует.", show_alert=True)
+        try:
+            await callback.message.delete()
+        except:
+            pass
+        return
+
+    client_id = order[1]
+    driver_id = order[2]
+    status = order[3]
+
+    if status == 'searching':
+        cancel_order(order_id)
+        if client_id in user_state and user_state[client_id].get("phone"):
+            user_state[client_id]["step"] = "from_address"
+            await bot.send_message(client_id,
+                "🚫 Поиск отменён. Укажите адрес подачи заново.",
+                reply_markup=from_location_method())
+        else:
+            await bot.send_message(client_id, "🚫 Поиск отменён.", reply_markup=main_menu())
+        await callback.message.edit_text("🚫 Поиск отменён.")
+    elif status == 'accepted':
+        if driver_id:
+            try:
+                await bot.send_message(driver_id,
+                    f"❌ Клиент отменил поездку (заказ #{order_id}).",
+                    reply_markup=driver_main())
+            except:
+                pass
+        cancel_order(order_id)
+        chat_sessions.pop(client_id, None)
+        if driver_id:
+            chat_sessions.pop(driver_id, None)
+        pending_client_geo.pop(client_id, None)
+        if driver_id:
+            pending_driver_geo.pop(driver_id, None)
+        await callback.message.edit_text("🚫 Поездка отменена.")
+        await bot.send_message(client_id, "🚫 Поездка отменена.", reply_markup=main_menu())
+    else:
+        await callback.message.edit_text("Заказ уже обработан.")
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("decline_cancel_"))
+async def decline_cancel_callback(callback: types.CallbackQuery):
+    order_id = int(callback.data.split("_")[2])
+    order = get_order(order_id)
+    if not order:
+        await callback.answer("Заказ не найден.")
+        await callback.message.delete()
+        return
+
+    if order[3] == 'searching':
+        await callback.message.edit_text("⏳ Продолжаем поиск...")
+        await bot.send_message(order[1], "⏳ Ищем ближайший автомобиль...", reply_markup=searching_driver_kb())
+    elif order[3] == 'accepted':
+        await callback.message.edit_text("Поездка продолжается.")
+        await bot.send_message(order[1], "Поездка продолжается.", reply_markup=client_driver_found())
+    else:
+        await callback.message.edit_text("Заказ не активен.")
     await callback.answer()
 
 @dp.message(F.text == "📋 Мои поездки")
