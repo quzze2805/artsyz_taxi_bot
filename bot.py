@@ -24,6 +24,7 @@ dp = Dispatcher()
 user_state = {}               # клиентский заказ
 driver_reg_state = {}         # регистрация водителя
 pending_client_geo = {}       # ожидание гео от клиента
+driver_cancel_state = {}      # driver_id -> order_id
 pending_driver_geo = {}       # ожидание гео от водителя
 chat_sessions = {}            # user_id -> (target_id, role)
 
@@ -217,7 +218,8 @@ async def contact_received(message: types.Message):
     uid = message.from_user.id
     if uid not in user_state or user_state[uid].get("step") != "get_phone":
         return
-    user_state[uid] = {"phone": message.contact.phone_number, "step": "from_address"}
+    phone = message.contact.phone_number
+    user_state[uid] = {"phone": phone, "step": "from_address"}
     await message.answer("📍 <b>Откуда вас забрать?</b>\nМожете отправить геопозицию или написать адрес.",
                          parse_mode="HTML", reply_markup=from_location_method())
 
@@ -229,12 +231,14 @@ async def manual_from(message: types.Message):
     user_state[uid]["step"] = "waiting_from_text"
     await message.answer("Напишите адрес подачи:", reply_markup=back_only_keyboard())
 
-@dp.message(lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "waiting_to_text")
-async def get_to_text(message: types.Message):
+@dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "waiting_from_text")
+async def get_from_text(message: types.Message):
     uid = message.from_user.id
-    user_state[uid]["to_address"] = message.text
-    user_state[uid]["step"] = "confirm"
-    await confirm_order_step(message)
+    user_state[uid]["from_address"] = message.text
+    user_state[uid]["from_lat"] = user_state[uid]["from_lon"] = None
+    user_state[uid]["step"] = "to_address"
+    await message.answer(f"Адрес подачи: «{message.text}»")
+    await ask_destination(message)
 
 @dp.message(F.location)
 async def location_handler(message: types.Message):
@@ -289,7 +293,7 @@ async def manual_to(message: types.Message):
     user_state[uid]["step"] = "waiting_to_text"
     await message.answer("Напишите адрес назначения:", reply_markup=back_only_keyboard())
 
-@dp.message(lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "waiting_to_text")
+@dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "waiting_to_text")
 async def get_to_text(message: types.Message):
     uid = message.from_user.id
     user_state[uid]["to_address"] = message.text
@@ -321,7 +325,7 @@ async def confirm_discount(message: types.Message):
         user_state[uid]["discount_applied"] = True
     await confirm_order_client(message)
 
-@dp.message(F.text == "✅ Подтвердить заказ (без скидки)")
+@dp.message(F.text == "✅ Подтвердить заказ (межгород, без скидки)")
 async def confirm_no_discount(message: types.Message):
     uid = message.from_user.id
     if uid in user_state:
@@ -370,11 +374,34 @@ async def cancel_order_creation(message: types.Message):
 
 @dp.message(F.text == "⬅ Назад")
 async def go_back(message: types.Message):
-    # упрощённая логика назад
     uid = message.from_user.id
-    if uid in user_state:
+    if uid not in user_state:
+        await message.answer("Вы не находитесь в процессе заказа.", reply_markup=main_menu())
+        return
+    step = user_state[uid].get("step")
+    if step in ("get_phone",):
         del user_state[uid]
-    await message.answer("Возврат в главное меню.", reply_markup=main_menu())
+        await message.answer("Оформление заказа отменено.", reply_markup=main_menu())
+    elif step in ("from_address", "waiting_from_text"):
+        # вернуться к запросу телефона
+        user_state[uid]["step"] = "get_phone"
+        await message.answer("Вернёмся к номеру телефона.", reply_markup=contact_request())
+    elif step in ("to_address", "waiting_to_text"):
+        # вернуться к адресу подачи
+        user_state[uid]["step"] = "from_address"
+        # сбросить адрес назначения, если был
+        user_state[uid].pop("to_address", None)
+        user_state[uid].pop("from_lat", None); user_state[uid].pop("from_lon", None)
+        await message.answer("📍 <b>Откуда вас забрать?</b>", parse_mode="HTML", reply_markup=from_location_method())
+    elif step == "confirm":
+        # вернуться к адресу назначения
+        user_state[uid]["step"] = "to_address"
+        user_state[uid].pop("to_address", None)
+        user_state[uid].pop("discount_applied", None)
+        await message.answer("🏁 <b>Куда едем?</b>", parse_mode="HTML", reply_markup=to_location_method())
+    else:
+        del user_state[uid]
+        await message.answer("Возврат в главное меню.", reply_markup=main_menu())
 
 # ========== Бонусы и рефералы ==========
 @dp.message(F.text == "🎁 Мои бонусы")
@@ -466,6 +493,32 @@ async def close_chat(message: types.Message):
             pass
         order_id = get_driver_current_order(uid)
         await message.answer("Чат завершён.", reply_markup=driver_order_actions(order_id) if order_id else driver_main())
+
+@dp.message(lambda msg: msg.from_user.id in driver_cancel_state)
+async def driver_cancel_reason(message: types.Message):
+    driver_id = message.from_user.id
+    order_id = driver_cancel_state.pop(driver_id)
+    reason = message.text.strip()
+    order = get_order(order_id)
+    if not order:
+        await message.answer("Заказ уже не найден.")
+        return
+    client_id = order[1]
+    cancel_order(order_id)
+    # Уведомляем клиента
+    try:
+        await bot.send_message(client_id,
+            f"❌ Водитель отменил поездку (заказ #{order_id}).\nПричина: {reason}",
+            reply_markup=main_menu())
+    except:
+        pass
+    # Уведомляем водителя
+    await message.answer("Заказ отменён.", reply_markup=driver_main())
+    # Очистка чата и гео-ожиданий
+    chat_sessions.pop(driver_id, None)
+    chat_sessions.pop(client_id, None)
+    pending_client_geo.pop(client_id, None)
+    pending_driver_geo.pop(driver_id, None)
 
 @dp.message(lambda msg: msg.from_user.id in chat_sessions)
 async def relay_chat_message(message: types.Message):
@@ -580,6 +633,20 @@ async def send_geo_to_client(callback: types.CallbackQuery):
     await bot.send_message(callback.from_user.id, "🗺 Отправьте вашу геопозицию для клиента.", reply_markup=request_location_kb("📍 Моя геопозиция"))
     await callback.answer("Отправьте гео.")
 
+@dp.callback_query(lambda c: c.data.startswith("cancel_by_driver_"))
+async def driver_cancel_order_prompt(callback: types.CallbackQuery):
+    driver_id = callback.from_user.id
+    order_id = int(callback.data.split("_")[3])
+    # Проверяем, что заказ ещё активен
+    order = get_order(order_id)
+    if not order or order[3] not in ('accepted', 'arrived'):
+        await callback.answer("Заказ уже не актуален.", show_alert=True)
+        return
+    # Сохраняем состояние ожидания причины
+    driver_cancel_state[driver_id] = order_id
+    await bot.send_message(driver_id, "📝 Укажите причину отмены заказа (одним сообщением):")
+    await callback.answer()
+
 @dp.callback_query(lambda c: c.data.startswith("arrived_"))
 async def driver_arrived(callback: types.CallbackQuery):
     order = get_order(int(callback.data.split("_")[1]))
@@ -587,9 +654,14 @@ async def driver_arrived(callback: types.CallbackQuery):
         return
     client_id = order[1]
     await bot.send_message(client_id, "🚕 <b>Водитель на месте!</b>", parse_mode="HTML", reply_markup=client_after_arrived())
+    # Обновлённая клавиатура водителя с чатом и завершением
     await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🛑 Завершить поездку", callback_data=f"finish_{order[0]}")]]))
-    await callback.answer()
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Сообщение клиенту", callback_data=f"chat_{order[0]}")],
+            [InlineKeyboardButton(text="🛑 Завершить поездку", callback_data=f"finish_{order[0]}")],
+        ]
+    ))
+    await callback.answer("Клиент уведомлён.")
 
 @dp.callback_query(lambda c: c.data.startswith("finish_"))
 async def driver_finish(callback: types.CallbackQuery):

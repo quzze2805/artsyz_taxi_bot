@@ -52,7 +52,7 @@ def apply_discount_kb(has_discounts):
         return ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text="✅ Подтвердить заказ (со скидкой 50%)")],
-                [KeyboardButton(text="✅ Подтвердить заказ (без скидки)")],
+                [KeyboardButton(text="✅ Подтвердить заказ (межгород, без скидки)")],
                 [KeyboardButton(text="⬅ Изменить"), KeyboardButton(text="❌ Отменить")]
             ],
             resize_keyboard=True
@@ -80,8 +80,8 @@ def client_chat_active():
 def client_after_arrived():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🏃 Уже иду")],
-            [KeyboardButton(text="⏳ Буду через 5 мин")],
+            [KeyboardButton(text="💬 Сообщение водителю")],
+            [KeyboardButton(text="🏃 Уже иду"), KeyboardButton(text="⏳ Буду через 5 мин")],
             [KeyboardButton(text="📍 Я на месте")],
         ],
         resize_keyboard=True
@@ -139,6 +139,7 @@ def driver_order_actions(order_id):
             [InlineKeyboardButton(text="💬 Сообщение клиенту", callback_data=f"chat_{order_id}")],
             [InlineKeyboardButton(text="📍 Запросить гео клиента", callback_data=f"req_loc_{order_id}")],
             [InlineKeyboardButton(text="🗺 Отправить гео клиенту", callback_data=f"send_loc_{order_id}")],
+            [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"cancel_by_driver_{order_id}")],
             [InlineKeyboardButton(text="👋 Я на месте", callback_data=f"arrived_{order_id}")],
             [InlineKeyboardButton(text="🛑 Завершить поездку", callback_data=f"finish_{order_id}")],
         ]
