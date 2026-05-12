@@ -5,12 +5,12 @@ def main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🚖 Заказать такси"), KeyboardButton(text="📋 Мои поездки")],
+            [KeyboardButton(text="🎁 Мои бонусы")],
             [KeyboardButton(text="💬 Поддержка")],
         ],
         resize_keyboard=True
     )
 
-# === Клиентские клавиатуры ===
 def contact_request():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -47,11 +47,32 @@ def confirm_order_kb():
         resize_keyboard=True
     )
 
+def apply_discount_kb(has_discounts):
+    if has_discounts:
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="✅ Подтвердить заказ (со скидкой 50%)")],
+                [KeyboardButton(text="✅ Подтвердить заказ (без скидки)")],
+                [KeyboardButton(text="⬅ Изменить"), KeyboardButton(text="❌ Отменить")]
+            ],
+            resize_keyboard=True
+        )
+    return confirm_order_kb()
+
 def client_driver_found():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📞 Контакты водителя")],
+            [KeyboardButton(text="💬 Сообщение водителю")],
             [KeyboardButton(text="📡 Отправить геопозицию"), KeyboardButton(text="❌ Отменить поездку")],
+        ],
+        resize_keyboard=True
+    )
+
+def client_chat_active():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🔕 Завершить чат")],
         ],
         resize_keyboard=True
     )
@@ -69,7 +90,7 @@ def client_after_arrived():
 def rating_keyboard(order_id):
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{i} {'⭐'*i}", callback_data=f"rate_{order_id}_{i}") for i in range(1, 6)]
+            [InlineKeyboardButton(text=f"{'⭐'*i} {i}", callback_data=f"rate_{order_id}_{i}") for i in range(1, 6)]
         ]
     )
 
@@ -85,7 +106,16 @@ def back_only_keyboard():
         resize_keyboard=True
     )
 
-# === Водительские клавиатуры ===
+def bonus_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="👥 Пригласить друга")],
+            [KeyboardButton(text="🔙 Назад")],
+        ],
+        resize_keyboard=True
+    )
+
+# --- Водитель ---
 def driver_main():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -106,6 +136,7 @@ def driver_accept_order(order_id):
 def driver_order_actions(order_id):
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Сообщение клиенту", callback_data=f"chat_{order_id}")],
             [InlineKeyboardButton(text="📍 Запросить гео клиента", callback_data=f"req_loc_{order_id}")],
             [InlineKeyboardButton(text="🗺 Отправить гео клиенту", callback_data=f"send_loc_{order_id}")],
             [InlineKeyboardButton(text="👋 Я на месте", callback_data=f"arrived_{order_id}")],
@@ -113,7 +144,13 @@ def driver_order_actions(order_id):
         ]
     )
 
-# ====== Админ-меню ======
+def driver_chat_active():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🔕 Завершить чат")]],
+        resize_keyboard=True
+    )
+
+# --- Админка ---
 def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[

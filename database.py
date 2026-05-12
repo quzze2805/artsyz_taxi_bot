@@ -40,9 +40,30 @@ def init_db():
             car_plate TEXT
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS allowed_drivers (
+            driver_id INTEGER PRIMARY KEY
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS loyalty (
+            client_id INTEGER PRIMARY KEY,
+            rides_count INTEGER DEFAULT 0,
+            available_discounts INTEGER DEFAULT 0
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS referrals (
+            referrer_id INTEGER,
+            referred_id INTEGER,
+            used BOOLEAN DEFAULT 0,
+            PRIMARY KEY (referrer_id, referred_id)
+        )
+    ''')
     conn.commit()
     conn.close()
 
+# --- Заказы ---
 def add_order(client_id, from_address, from_lat, from_lon, to_address, phone):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -122,7 +143,7 @@ def get_client_last_orders(client_id, limit=5):
     conn.close()
     return rows
 
-# Новые функции для водителей
+# --- Водители ---
 def save_driver(driver_id, name=None, phone=None, car_model=None, car_color=None, car_plate=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -140,3 +161,94 @@ def get_driver(driver_id):
     row = c.fetchone()
     conn.close()
     return row
+
+def is_driver_allowed(driver_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT 1 FROM allowed_drivers WHERE driver_id=?', (driver_id,))
+    row = c.fetchone()
+    conn.close()
+    return row is not None
+
+def add_allowed_driver(driver_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('INSERT OR IGNORE INTO allowed_drivers (driver_id) VALUES (?)', (driver_id,))
+    conn.commit()
+    conn.close()
+
+def remove_allowed_driver(driver_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('DELETE FROM allowed_drivers WHERE driver_id=?', (driver_id,))
+    c.execute('DELETE FROM drivers WHERE driver_id=?', (driver_id,))
+    conn.commit()
+    conn.close()
+
+def get_all_drivers():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT * FROM drivers')
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def get_allowed_drivers_list():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT driver_id FROM allowed_drivers')
+    rows = c.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+# --- Лояльность ---
+def get_loyalty(client_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('INSERT OR IGNORE INTO loyalty (client_id) VALUES (?)', (client_id,))
+    c.execute('SELECT rides_count, available_discounts FROM loyalty WHERE client_id=?', (client_id,))
+    row = c.fetchone()
+    conn.commit()
+    conn.close()
+    return row
+
+def increment_rides(client_id):
+    """Увеличивает счётчик поездок, при достижении 5 конвертирует в скидку"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('UPDATE loyalty SET rides_count = rides_count + 1 WHERE client_id=?', (client_id,))
+    c.execute('SELECT rides_count FROM loyalty WHERE client_id=?', (client_id,))
+    count = c.fetchone()[0]
+    if count >= 5:
+        c.execute('UPDATE loyalty SET available_discounts = available_discounts + 1, rides_count = 0 WHERE client_id=?', (client_id,))
+    conn.commit()
+    conn.close()
+
+def use_discount(client_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('UPDATE loyalty SET available_discounts = available_discounts - 1 WHERE client_id=? AND available_discounts > 0', (client_id,))
+    conn.commit()
+    conn.close()
+
+# --- Рефералы ---
+def save_referral(referrer_id, referred_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('INSERT OR IGNORE INTO referrals (referrer_id, referred_id) VALUES (?, ?)', (referrer_id, referred_id))
+    conn.commit()
+    conn.close()
+
+def complete_referral(referred_id):
+    """После первой поездки друга: начисляет скидку пригласившему"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT referrer_id FROM referrals WHERE referred_id=? AND used=0 LIMIT 1', (referred_id,))
+    row = c.fetchone()
+    if row:
+        referrer_id = row[0]
+        c.execute('UPDATE referrals SET used=1 WHERE referred_id=?', (referred_id,))
+        c.execute('INSERT OR IGNORE INTO loyalty (client_id) VALUES (?)', (referrer_id,))
+        c.execute('UPDATE loyalty SET available_discounts = available_discounts + 1 WHERE client_id=?', (referrer_id,))
+    conn.commit()
+    conn.close()
