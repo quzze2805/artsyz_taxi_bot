@@ -14,7 +14,7 @@ from database import (init_db, add_order, get_order, accept_order,
                       get_allowed_drivers_list,
                       get_loyalty, increment_rides, use_discount,
                       save_referral, complete_referral,
-                      process_finished_order)
+                      process_finished_order, save_review)
 from keyboards import *
 
 async def safe_callback_answer(callback: types.CallbackQuery, text: str = None, show_alert: bool = False):
@@ -36,6 +36,7 @@ driver_reg_state = {}         # регистрация водителя
 pending_client_geo = {}       # ожидание гео от клиента
 driver_cancel_state = {}      # driver_id -> order_id
 pending_driver_geo = {}       # ожидание гео от водителя
+review_state = {}             # user_id -> order_id
 chat_sessions = {}            # user_id -> (target_id, role)
 
 # ========== Общие команды ==========
@@ -293,6 +294,60 @@ async def go_back(message: types.Message):
     else:
         del user_state[uid]
         await message.answer("Возврат в главное меню.", reply_markup=main_menu())
+
+@dp.message(F.text == "✍️ Оставить отзыв")
+async def review_write_prompt(message: types.Message):
+    print("DEBUG: review_write_prompt вызван")  # увидим в консоли
+    uid = message.from_user.id
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute("SELECT id FROM orders WHERE client_id=? AND status='finished' AND review IS NULL ORDER BY id DESC LIMIT 1", (uid,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await message.answer("Нет заказа для отзыва.", reply_markup=main_menu())
+        return
+    order_id = row[0]
+    review_state[uid] = order_id
+    await message.answer("Пожалуйста, напишите ваш отзыв в одном сообщении. Чтобы пропустить, нажмите кнопку «⏭ Пропустить».", reply_markup=skip_review_kb())
+
+@dp.message(F.text, lambda msg: msg.from_user.id in review_state)
+async def review_receive_text(message: types.Message):
+    uid = message.from_user.id
+    order_id = review_state.pop(uid, None)
+    if not order_id:
+        return  # не в состоянии отзыва, ничего не делаем
+    review_text = message.text.strip()
+    if not review_text:
+        await message.answer("Отзыв не может быть пустым. Попробуйте ещё раз или нажмите «⏭ Пропустить».")
+        # возвращаем состояние обратно, чтобы пользователь мог попробовать снова
+        review_state[uid] = order_id
+        return
+    save_review(order_id, review_text)
+    await message.answer("Спасибо за ваш отзыв! Он помогает нам становиться лучше.", reply_markup=main_menu())
+
+# ---------- Отзывы ----------
+@dp.message(F.text == "✍️ Оставить отзыв")
+async def review_write_prompt(message: types.Message):
+    uid = message.from_user.id
+    # Ищем последний завершённый заказ без отзыва
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute("SELECT id FROM orders WHERE client_id=? AND status='finished' AND review IS NULL ORDER BY id DESC LIMIT 1", (uid,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await message.answer("Нет заказа для отзыва.", reply_markup=main_menu())
+        return
+    order_id = row[0]
+    review_state[uid] = order_id
+    await message.answer("Напишите ваш отзыв в одном сообщении. Для отмены нажмите «⏭ Пропустить».", reply_markup=skip_review_kb())
+
+@dp.message(F.text == "⏭ Пропустить")
+async def review_skip(message: types.Message):
+    uid = message.from_user.id
+    review_state.pop(uid, None)
+    await message.answer("Спасибо за поездку! До новых встреч.", reply_markup=main_menu())
 
 @dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "waiting_from_text")
 async def get_from_text(message: types.Message):
@@ -880,24 +935,30 @@ async def rate_order(callback: types.CallbackQuery):
     try:
         _, order_id, stars = callback.data.split("_")
         order_id, stars = int(order_id), int(stars)
-        
-        # Сохраняем оценку в базу
+
+        # Сохраняем оценку
         conn = sqlite3.connect("taxi.db")
         c = conn.cursor()
         c.execute('UPDATE orders SET rating=? WHERE id=?', (stars, order_id))
         conn.commit()
         conn.close()
-        
-        # Сообщаем клиенту
-        await callback.message.edit_text(f"Спасибо! Оценка: {stars}⭐")
-        
-        # Отправляем водителю уведомление об оценке
+
+        # Уведомление водителю об оценке
         order = get_order(order_id)
-        if order and order[2]:  # driver_id не None
+        if order and order[2]:
             driver_id = order[2]
             await bot.send_message(driver_id, f"📊 Оценка за заказ №{order_id}: {'⭐'*stars} ({stars}/5)")
+
+        # Предлагаем оставить отзыв
+        if stars <= 3:
+            msg = "Спасибо за оценку. Нам жаль, что поездка не была идеальной. Напишите, что можно улучшить, и мы постараемся стать лучше!"
+        else:
+            msg = "Спасибо за высокую оценку! Будем рады, если вы оставите отзыв (по желанию)."
+
+        await callback.message.edit_text(f"Оценка: {stars}⭐")
+        await bot.send_message(order[1], msg, reply_markup=review_prompt_kb(order_id))
     except Exception:
-        pass  # игнорируем устаревшие или ошибочные запросы
+        pass
     await safe_callback_answer(callback)
 
 @dp.callback_query(lambda c: c.data.startswith("confirm_cancel_"))

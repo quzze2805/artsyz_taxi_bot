@@ -171,6 +171,22 @@ def confirm_cancel_kb(order_id: int) -> InlineKeyboardMarkup:
         ]
     )
 
+def review_prompt_kb(order_id: int) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✍️ Оставить отзыв"), KeyboardButton(text="⏭ Пропустить")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+def skip_review_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="⏭ Пропустить")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
 def searching_driver_kb():
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="❌ Отменить заказ")]],
