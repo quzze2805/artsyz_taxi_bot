@@ -90,7 +90,7 @@ def client_after_arrived():
 def rating_keyboard(order_id):
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{'⭐'*i} {i}", callback_data=f"rate_{order_id}_{i}") for i in range(1, 6)]
+            [InlineKeyboardButton(text=f"{i}⭐", callback_data=f"rate_{order_id}_{i}") for i in range(1, 6)]
         ]
     )
 
