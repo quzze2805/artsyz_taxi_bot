@@ -11,8 +11,7 @@ from database import (init_db, add_order, get_order, accept_order,
                       get_driver_current_order, finish_order,
                       cancel_order, get_client_last_orders,
                       save_driver, get_driver, is_driver_allowed,
-                      add_allowed_driver, remove_allowed_driver,
-                      get_allowed_drivers_list, get_all_drivers)
+                      add_allowed_driver, remove_allowed_driver, get_all_drivers)
 from keyboards import *
 
 logging.basicConfig(level=logging.INFO)
@@ -71,6 +70,10 @@ async def admin_add_driver_prompt(message: types.Message):
         return
     user_state[message.from_user.id] = {"step": "admin_enter_id"}
     await message.answer("Введите Telegram ID нового водителя (целое число):", reply_markup=ReplyKeyboardRemove())
+
+@dp.message(F.text == "🔙 Выйти из админки")
+async def admin_exit(message: types.Message):
+    await message.answer("Вы вышли из админ-панели.", reply_markup=main_menu())
 
 @dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_enter_id")
 async def admin_enter_driver_id(message: types.Message):
