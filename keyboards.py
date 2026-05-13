@@ -158,6 +158,7 @@ def admin_menu():
             [KeyboardButton(text="➕ Добавить водителя")],
             [KeyboardButton(text="➖ Удалить водителя")],
             [KeyboardButton(text="📋 Список водителей")],
+            [KeyboardButton(text="🔴 Закончить рабочий день"), KeyboardButton(text="🟢 Включить рабочий день")],
             [KeyboardButton(text="🔙 Выйти из админки")],
         ],
         resize_keyboard=True
@@ -190,5 +191,14 @@ def skip_review_kb() -> ReplyKeyboardMarkup:
 def searching_driver_kb():
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="❌ Отменить заказ")]],
+        resize_keyboard=True
+    )
+
+def workday_closed_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📞 Позвонить диспетчеру")],
+            [KeyboardButton(text="🔙 Вернуться в главное меню")],
+        ],
         resize_keyboard=True
     )

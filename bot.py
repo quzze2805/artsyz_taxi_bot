@@ -14,7 +14,7 @@ from database import (init_db, add_order, get_order, accept_order,
                       get_allowed_drivers_list,
                       get_loyalty, increment_rides, use_discount,
                       save_referral, complete_referral,
-                      process_finished_order, save_review)
+                      process_finished_order, save_review, is_workday_active, set_workday_active)
 from keyboards import *
 
 async def safe_callback_answer(callback: types.CallbackQuery, text: str = None, show_alert: bool = False):
@@ -64,6 +64,15 @@ async def cmd_start(message: types.Message):
         await message.answer(text, parse_mode="HTML")
     await message.answer("Что хотите сделать?", reply_markup=main_menu())
 
+    if not is_workday_active():
+        await message.answer(
+            "🌙 Зараз неробочий час. Замовлення через бота тимчасово недоступні.\n\n"
+            "Для замовлення таксі зателефонуйте нам завтра:\n"
+            "📞 +38 075 443 67 57",
+            reply_markup=workday_closed_kb()
+        )
+        return
+
 @dp.message(Command("id"))
 async def cmd_id(message: types.Message):
     await message.answer(f"Ваш Telegram ID: <code>{message.from_user.id}</code>", parse_mode="HTML")
@@ -74,6 +83,20 @@ async def cmd_admin(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         return
     await message.answer("🔐 Админ-панель:", reply_markup=admin_menu())
+
+@dp.message(F.text == "🔴 Закончить рабочий день")
+async def admin_stop_workday(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    set_workday_active(False)
+    await message.answer("🔴 Рабочий день завершён. Клиенты увидят сообщение о нерабочем времени.")
+
+@dp.message(F.text == "🟢 Включить рабочий день")
+async def admin_start_workday(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    set_workday_active(True)
+    await message.answer("🟢 Рабочий день включён. Клиенты могут заказывать такси.")
 
 @dp.message(F.text == "➕ Добавить водителя")
 async def admin_add_driver_prompt(message: types.Message):
@@ -141,6 +164,14 @@ async def admin_list_drivers(message: types.Message):
 @dp.message(F.text == "🔙 Выйти из админки")
 async def admin_exit(message: types.Message):
     await message.answer("Вы вышли из админ-панели.", reply_markup=main_menu())
+
+@dp.message(F.text == "📞 Позвонить диспетчеру")
+async def closed_call_disp(message: types.Message):
+    await message.answer("📞 Телефонуйте: +38 075 443 67 57")
+
+@dp.message(F.text == "🔙 Вернуться в главное меню")
+async def closed_back_to_main(message: types.Message):
+    await message.answer("Повертаємось до головного меню.", reply_markup=main_menu())
 
 # ========== Кабинет водителя ==========
 @dp.message(Command("driver"))
@@ -215,11 +246,22 @@ async def end_shift(message: types.Message):
 # ========== Клиентский заказ ==========
 @dp.message(F.text == "🚖 Заказать такси")
 async def start_order(message: types.Message):
-    user_state[message.from_user.id] = {"step": "get_phone"}
+    if not is_workday_active():
+        await message.answer(
+            "🌙 Зараз неробочий час. Замовлення через бота тимчасово недоступні.\n\n"
+            "Для замовлення таксі зателефонуйте нам завтра:\n"
+            "📞 +38 075 443 67 57\n\n"
+            "Гарного вечора!",
+            reply_markup=workday_closed_kb()
+        )
+        return
+    user_id = message.from_user.id
     await message.answer(
-        "Для оформления заказа, пожалуйста, подтвердите ваш номер телефона.",
+        "Для оформлення замовлення, будь ласка, підтвердьте ваш номер телефону. "
+        "Це потрібно, щоб водій міг зв'язатися з вами.",
         reply_markup=contact_request()
     )
+    user_state[user_id] = {"step": "get_phone"}
 
 @dp.message(F.text == "💬 Поддержка")
 async def support(message: types.Message):
