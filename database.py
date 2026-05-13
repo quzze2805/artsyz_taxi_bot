@@ -62,6 +62,12 @@ def init_db():
             PRIMARY KEY (referrer_id, referred_id)
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -299,3 +305,27 @@ def complete_referral(referred_id):
         c.execute('UPDATE loyalty SET available_discounts = available_discounts + 1 WHERE client_id=?', (referrer_id,))
     conn.commit()
     conn.close()
+
+def get_setting(key):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT value FROM settings WHERE key=?', (key,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def set_setting(key, value):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, str(value)))
+    conn.commit()
+    conn.close()
+
+def is_workday_active():
+    val = get_setting('workday_active')
+    if val is None:
+        return True  # по умолчанию включено
+    return val == 'True'
+
+def set_workday_active(active: bool):
+    set_setting('workday_active', str(active))
