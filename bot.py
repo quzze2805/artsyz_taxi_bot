@@ -14,7 +14,8 @@ from database import (init_db, add_order, get_order, accept_order,
                       get_allowed_drivers_list,
                       get_loyalty, increment_rides, use_discount,
                       save_referral, complete_referral,
-                      process_finished_order, save_review, is_workday_active, set_workday_active)
+                      process_finished_order, save_review, is_workday_active, set_workday_active,
+                      get_client_info)
 from keyboards import *
 
 async def safe_callback_answer(callback: types.CallbackQuery, text: str = None, show_alert: bool = False):
@@ -560,19 +561,47 @@ async def confirm_order_client(message: types.Message):
     order_id = add_order(uid, state["from_address"], state.get("from_lat"), state.get("from_lon"),
                      state.get("to_address"), state.get("phone"),
                      discount=1 if state.get("discount_applied") else 0)
-    # списываем скидку, если применена
+
+    # Обновляем данные клиента в клиентской базе
+    update_client(uid, state.get("phone"), message.from_user.full_name)
+
     online = get_online_drivers()
     if not online:
         await message.answer("😔 Нет свободных водителей. Попробуйте позже или звоните диспетчеру.", reply_markup=main_menu())
         return
     discount_msg = "\n💰 Скидка 50% (лояльность)" if state.get("discount_applied") else ""
+
+    # Получаем информацию о клиенте из Telegram
+    try:
+        client_user = await bot.get_chat(uid)
+        if client_user.username:
+            client_telegram = f"@{client_user.username}"
+        else:
+            client_telegram = f"tg://user?id={uid}"
+        client_name = client_user.full_name or "не указано"
+    except:
+        client_telegram = f"tg://user?id={uid}"
+        client_name = "не указано"
+
+    # Статистика клиента из clients.db
+    client_info = get_client_info(state.get("phone"))
+    rides_info = ""
+    if client_info:
+        rides_info = f"🚕 Поїздок: {client_info[3]}"
+        if client_info[3] == 0:
+            rides_info += " (новий клієнт)"
+
     for driver_id in online:
         try:
             driver_info_msg = (
                 f"🔔 <b>Новый заказ!</b>\n"
                 f"📍 Откуда: {state['from_address']}\n"
                 f"🏁 Куда: {state.get('to_address')}\n"
-                f"📞 Клиент: {state.get('phone')}{discount_msg}\n"
+                f"📞 Телефон: {state.get('phone')}\n"
+                f"👤 Клиент: {client_name}\n"
+                f"💬 Telegram: {client_telegram}\n"
+                f"{rides_info}\n"
+                f"{discount_msg}"
                 f"ID заказа: {order_id}"
             )
             await bot.send_message(driver_id, driver_info_msg, parse_mode="HTML",
@@ -581,6 +610,7 @@ async def confirm_order_client(message: types.Message):
                 await bot.send_location(driver_id, latitude=state["from_lat"], longitude=state["from_lon"])
         except Exception as e:
             logging.error(f"Failed to notify driver {driver_id}: {e}")
+
     await message.answer("⏳ Ищем ближайший автомобиль...", reply_markup=searching_driver_kb())
     if uid in user_state:
         phone = user_state[uid].get("phone")
