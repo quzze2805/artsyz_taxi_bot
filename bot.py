@@ -122,10 +122,89 @@ async def admin_enter_driver_id(message: types.Message):
 
     if is_driver_allowed(driver_id):
         await message.answer("Этот водитель уже добавлен.")
-    else:
-        add_allowed_driver(driver_id)
-        await message.answer(f"✅ Водитель {driver_id} добавлен. Попросите его выполнить /driver и зарегистрироваться.")
-    del user_state[message.from_user.id]
+        del user_state[message.from_user.id]
+        return
+
+    user_state[message.from_user.id]["new_driver_id"] = driver_id
+    user_state[message.from_user.id]["step"] = "admin_enter_driver_name"
+    await message.answer("👤 Введите имя водителя:")
+
+@dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_enter_driver_name")
+async def admin_enter_driver_name(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    user_state[message.from_user.id]["new_driver_name"] = message.text.strip()
+    user_state[message.from_user.id]["step"] = "admin_enter_driver_phone"
+    await message.answer("📞 Введите номер телефона водителя (в формате +380XXXXXXXXX):")
+
+@dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_enter_driver_phone")
+async def admin_enter_driver_phone(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    phone = message.text.strip()
+    user_state[message.from_user.id]["new_driver_phone"] = phone
+    user_state[message.from_user.id]["step"] = "admin_enter_driver_car"
+    await message.answer("🚗 Введите марку и модель авто (например: Toyota Camry):")
+
+@dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_enter_driver_car")
+async def admin_enter_driver_car(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    user_state[message.from_user.id]["new_driver_car"] = message.text.strip()
+    user_state[message.from_user.id]["step"] = "admin_enter_driver_color"
+    await message.answer("🎨 Введите цвет авто:")
+
+@dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_enter_driver_color")
+async def admin_enter_driver_color(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    user_state[message.from_user.id]["new_driver_color"] = message.text.strip()
+    user_state[message.from_user.id]["step"] = "admin_enter_driver_plate"
+    await message.answer("🔢 Введите госномер авто (например: A123BC):")
+
+@dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_enter_driver_plate")
+async def admin_enter_driver_plate(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    admin_id = message.from_user.id
+    driver_id = user_state[admin_id]["new_driver_id"]
+    name = user_state[admin_id]["new_driver_name"]
+    phone = user_state[admin_id]["new_driver_phone"]
+    car_model = user_state[admin_id]["new_driver_car"]
+    car_color = user_state[admin_id]["new_driver_color"]
+    car_plate = message.text.strip()
+
+    # Сохраняем водителя
+    add_allowed_driver(driver_id)
+    save_driver(driver_id, name=name, phone=phone, car_model=car_model, car_color=car_color, car_plate=car_plate)
+
+    await message.answer(
+        f"✅ Водитель добавлен:\n"
+        f"ID: {driver_id}\n"
+        f"Имя: {name}\n"
+        f"Телефон: {phone}\n"
+        f"Авто: {car_model} {car_color} ({car_plate})",
+        reply_markup=admin_menu()
+    )
+
+    # Отправляем уведомление водителю
+    try:
+        await bot.send_message(
+            driver_id,
+            "🎉 <b>Поздравляем!</b>\n\n"
+            "Вы добавлены водителем в сервис <b>TaxiService</b>!\n\n"
+            "🚘 Теперь вы можете принимать заказы и зарабатывать.\n\n"
+            "Для начала работы:\n"
+            "1️⃣ Откройте бота: @Taxi_ArcyzBot\n"
+            "2️⃣ Нажмите /driver\n"
+            "3️⃣ Нажмите «🔛 Начать смену»\n\n"
+            "Добро пожаловать в команду! 💪",
+            parse_mode="HTML"
+        )
+    except:
+        logging.warning(f"Не удалось отправить уведомление водителю {driver_id}")
+
+    del user_state[admin_id]
 
 @dp.message(F.text == "➖ Удалить водителя")
 async def admin_remove_driver_prompt(message: types.Message):
