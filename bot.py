@@ -678,13 +678,17 @@ async def confirm_order_step(message: types.Message):
         return
     loyalty = get_loyalty(uid)
     has_discounts = (loyalty and loyalty[1] > 0)
-    state["discount_applied"] = has_discounts  # предварительно
+    state["discount_applied"] = has_discounts
     discount_text = "\n💰 Применена скидка 50%!" if has_discounts else ""
+    phone = state.get("phone", "не указан") or "не указан"
+    from_addr = state.get("from_address") or "не указан"
+    to_addr = state.get("to_address") or "не указан"
     summary = (
         f"📋 <b>Ваш заказ:</b>\n"
-        f"📍 Откуда: {state['from_address']}\n"
-        f"🏁 Куда: {state.get('to_address', 'не указан')}\n"
-        f"📞 Телефон: {state.get('phone', 'не указан')}{discount_text}\n\n"
+        f"📍 Откуда: {from_addr}\n"
+        f"🏁 Куда: {to_addr}\n"
+        f"📞 Телефон: {phone}{discount_text}\n\n"
+        f"<i>⚠️ Неправдиві виклики призводять до блокування акаунта — ви більше не зможете користуватися нашим сервісом.</i>\n\n"
         f"Всё верно?"
     )
     await message.answer(summary, parse_mode="HTML", reply_markup=apply_discount_kb(has_discounts))
