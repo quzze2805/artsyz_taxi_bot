@@ -4,6 +4,8 @@ SUPPORT_PHONE = "+380754436757"
 SERVICE_NAME = "TaxiService"
 TELEGRAM_CONTACT = "@taxi_artsyz"
 
+CLIENTS_DB = "clients.db"
+
 ADMIN_IDS = [587327291]
 
 POPULAR_PLACES = {
