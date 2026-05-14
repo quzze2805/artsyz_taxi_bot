@@ -223,8 +223,24 @@ async def admin_remove_enter_id(message: types.Message):
         await message.answer("Некорректный ID. Отмена.")
         del user_state[message.from_user.id]
         return
+    
     remove_allowed_driver(driver_id)
-    await message.answer(f"✅ Водитель {driver_id} удалён из системы.")
+    await message.answer(f"✅ Водитель {driver_id} удалён из системы.", reply_markup=admin_menu())
+    
+    # Отправляем уведомление водителю об исключении
+    try:
+        await bot.send_message(
+            driver_id,
+            "🔔 <b>Уведомление</b>\n\n"
+            "К сожалению, вы были исключены из списка водителей сервиса <b>TaxiService</b>.\n\n"
+            "Если вы считаете это ошибкой или хотите обсудить причину, "
+            "пожалуйста, свяжитесь с диспетчером:\n"
+            "📞 +38 075 443 67 57",
+            parse_mode="HTML"
+        )
+    except:
+        logging.warning(f"Не удалось отправить уведомление водителю {driver_id}")
+    
     del user_state[message.from_user.id]
 
 @dp.message(F.text == "📋 Список водителей")
