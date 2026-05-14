@@ -12,10 +12,13 @@ from database import (init_db, add_order, get_order, accept_order,
                       save_driver, get_driver, is_driver_allowed,
                       add_allowed_driver, remove_allowed_driver, get_all_drivers,
                       get_allowed_drivers_list,
-                      get_loyalty, increment_rides, use_discount,
-                      save_referral, complete_referral,
-                      process_finished_order, save_review, is_workday_active, set_workday_active,
-                      get_client_info)
+                      get_loyalty, use_discount,
+                      save_referral,
+                      process_finished_order, save_review,
+                      is_workday_active, set_workday_active,
+                      update_client, get_client_info,
+                      block_client, unblock_client, is_blocked,
+                      get_block_reason)
 from keyboards import *
 
 async def safe_callback_answer(callback: types.CallbackQuery, text: str = None, show_alert: bool = False):
@@ -174,6 +177,55 @@ async def closed_call_disp(message: types.Message):
 async def closed_back_to_main(message: types.Message):
     await message.answer("Повертаємось до головного меню.", reply_markup=main_menu())
 
+# ---------- Чёрный список ----------
+@dp.message(F.text == "🚫 Заблокировать клиента")
+async def admin_block_prompt(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    user_state[message.from_user.id] = {"step": "admin_block_phone"}
+    await message.answer("Введите номер телефона клиента для блокировки (в формате 380XXXXXXXXX):")
+
+@dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_block_phone")
+async def admin_block_phone(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    phone = message.text.strip().replace('+', '').replace('-', '').replace(' ', '')
+    if not phone.startswith("380") or len(phone) != 12:
+        await message.answer("Неверный формат номера. Попробуйте ещё раз (380XXXXXXXXX):")
+        return
+    user_state[message.from_user.id]["block_phone"] = phone
+    user_state[message.from_user.id]["step"] = "admin_block_reason"
+    await message.answer("Укажите причину блокировки (одним сообщением):")
+
+@dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_block_reason")
+async def admin_block_reason(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    phone = user_state[message.from_user.id]["block_phone"]
+    reason = message.text.strip()
+    block_client(phone, reason)
+    await message.answer(f"✅ Клиент {phone} заблокирован.\nПричина: {reason}", reply_markup=admin_menu())
+    del user_state[message.from_user.id]
+
+@dp.message(F.text == "✅ Разблокировать клиента")
+async def admin_unblock_prompt(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    user_state[message.from_user.id] = {"step": "admin_unblock_phone"}
+    await message.answer("Введите номер телефона клиента для разблокировки (380XXXXXXXXX):")
+
+@dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_unblock_phone")
+async def admin_unblock_phone(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    phone = message.text.strip().replace('+', '').replace('-', '').replace(' ', '')
+    if not phone.startswith("380") or len(phone) != 12:
+        await message.answer("Неверный формат номера. Попробуйте ещё раз:")
+        return
+    unblock_client(phone)
+    await message.answer(f"✅ Клиент {phone} разблокирован.", reply_markup=admin_menu())
+    del user_state[message.from_user.id]
+
 # ========== Кабинет водителя ==========
 @dp.message(Command("driver"))
 async def cmd_driver(message: types.Message):
@@ -273,7 +325,27 @@ async def contact_received(message: types.Message):
     uid = message.from_user.id
     if uid not in user_state or user_state[uid].get("step") != "get_phone":
         return
-    phone = message.contact.phone_number
+    # Убираем + и все нецифровые символы
+    phone = message.contact.phone_number.strip().replace('+', '').replace('-', '').replace(' ', '')
+
+    # Проверка чёрного списка
+    if is_blocked(phone):
+        # Получаем причину блокировки
+        reason = get_block_reason(phone)
+        reason_text = f"\n\n<i>Причина: {reason}</i>" if reason else ""
+
+        await message.answer(
+            "⛔ <b>Доступ заблоковано</b>\n\n"
+            "На жаль, ви більше не можете користуватися послугами нашого сервісу "
+            f"через порушення правил користування.{reason_text}\n\n"
+            "Якщо ви вважаєте це помилкою, будь ласка, зв'яжіться з диспетчером:\n"
+            "📞 +38 075 443 67 57",
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        del user_state[uid]
+        return
+
     user_state[uid] = {"phone": phone, "step": "from_address"}
     await message.answer("📍 <b>Откуда вас забрать?</b>\nМожете отправить геопозицию или написать адрес.",
                          parse_mode="HTML", reply_markup=from_location_method())
