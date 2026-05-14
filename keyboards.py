@@ -158,6 +158,7 @@ def admin_menu():
             [KeyboardButton(text="➕ Добавить водителя")],
             [KeyboardButton(text="➖ Удалить водителя")],
             [KeyboardButton(text="📋 Список водителей")],
+            [KeyboardButton(text="🚫 Заблокировать клиента"), KeyboardButton(text="✅ Разблокировать клиента")],
             [KeyboardButton(text="🔴 Закончить рабочий день"), KeyboardButton(text="🟢 Включить рабочий день")],
             [KeyboardButton(text="🔙 Выйти из админки")],
         ],
