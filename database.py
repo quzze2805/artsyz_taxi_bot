@@ -6,7 +6,7 @@ CLIENTS_DB = "clients.db"
 
 # ========== Инициализация баз ==========
 def init_db():
-    # Основная база (заказы, водители, настройки)
+    # Основная база (временные данные: заказы, статус водителей, настройки)
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''
@@ -33,6 +33,29 @@ def init_db():
             driver_id INTEGER PRIMARY KEY,
             is_online BOOLEAN DEFAULT 0,
             current_order_id INTEGER
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+    # Клиентская база (НЕ УДАЛЯЕТСЯ: водители, лояльность, рефералы, клиенты, чёрный список)
+    conn = sqlite3.connect(CLIENTS_DB)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS clients (
+            phone TEXT PRIMARY KEY,
+            telegram_id INTEGER,
+            name TEXT,
+            total_rides INTEGER DEFAULT 0,
+            total_discounts_used INTEGER DEFAULT 0,
+            first_ride_at TEXT,
+            last_ride_at TEXT
         )
     ''')
     c.execute('''
@@ -66,29 +89,6 @@ def init_db():
         )
     ''')
     c.execute('''
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-    # Клиентская база (номера, имена, статистика, чёрный список) — НЕ УДАЛЯЕТСЯ при сбросе taxi.db
-    conn = sqlite3.connect(CLIENTS_DB)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS clients (
-            phone TEXT PRIMARY KEY,
-            telegram_id INTEGER,
-            name TEXT,
-            total_rides INTEGER DEFAULT 0,
-            total_discounts_used INTEGER DEFAULT 0,
-            first_ride_at TEXT,
-            last_ride_at TEXT
-        )
-    ''')
-    c.execute('''
         CREATE TABLE IF NOT EXISTS blacklist (
             phone TEXT PRIMARY KEY,
             reason TEXT,
@@ -98,9 +98,8 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ========== Клиентская база (независимая) ==========
+# ========== Клиентская база ==========
 def update_client(telegram_id, phone, name=None):
-    """Обновить или создать запись клиента по номеру телефона"""
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     now = datetime.now().isoformat()
@@ -116,7 +115,6 @@ def update_client(telegram_id, phone, name=None):
     conn.close()
 
 def increment_client_rides(phone):
-    """Увеличить счётчик поездок клиента"""
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     now = datetime.now().isoformat()
@@ -125,7 +123,6 @@ def increment_client_rides(phone):
     conn.close()
 
 def get_client_info(phone):
-    """Получить информацию о клиенте по номеру телефона"""
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('SELECT * FROM clients WHERE phone=?', (phone,))
@@ -215,35 +212,48 @@ def process_finished_order(order_id):
         conn.close()
         return
     client_id, phone, discount = row
+
+    # Скидка в loyalty (clients.db)
+    conn2 = sqlite3.connect(CLIENTS_DB)
+    c2 = conn2.cursor()
     if discount:
-        c.execute('UPDATE loyalty SET available_discounts = available_discounts - 1 WHERE client_id=? AND available_discounts > 0', (client_id,))
+        c2.execute('UPDATE loyalty SET available_discounts = available_discounts - 1 WHERE client_id=? AND available_discounts > 0', (client_id,))
+
+    # Освобождаем водителя
     c.execute('UPDATE driver_state SET current_order_id=NULL WHERE current_order_id=?', (order_id,))
-    c.execute('INSERT OR IGNORE INTO loyalty (client_id) VALUES (?)', (client_id,))
-    c.execute('SELECT rides_count FROM loyalty WHERE client_id=?', (client_id,))
-    row2 = c.fetchone()
-    rides_before = row2[0] if row2 else 0
-    c.execute('UPDATE loyalty SET rides_count = rides_count + 1 WHERE client_id=?', (client_id,))
-    c.execute('SELECT rides_count FROM loyalty WHERE client_id=?', (client_id,))
-    new_count = c.fetchone()[0]
-    if new_count >= 5:
-        c.execute('UPDATE loyalty SET available_discounts = available_discounts + 1, rides_count = 0 WHERE client_id=?', (client_id,))
-    if rides_before == 0:
-        c.execute('SELECT referrer_id FROM referrals WHERE referred_id=? AND used=0 LIMIT 1', (client_id,))
-        ref_row = c.fetchone()
-        if ref_row:
-            referrer_id = ref_row[0]
-            c.execute('UPDATE referrals SET used=1 WHERE referred_id=?', (client_id,))
-            c.execute('INSERT OR IGNORE INTO loyalty (client_id) VALUES (?)', (referrer_id,))
-            c.execute('UPDATE loyalty SET available_discounts = available_discounts + 1 WHERE client_id=?', (referrer_id,))
     conn.commit()
     conn.close()
-    # Обновляем клиентскую базу
+
+    # Лояльность
+    c2.execute('INSERT OR IGNORE INTO loyalty (client_id) VALUES (?)', (client_id,))
+    c2.execute('SELECT rides_count FROM loyalty WHERE client_id=?', (client_id,))
+    row2 = c2.fetchone()
+    rides_before = row2[0] if row2 else 0
+    c2.execute('UPDATE loyalty SET rides_count = rides_count + 1 WHERE client_id=?', (client_id,))
+    c2.execute('SELECT rides_count FROM loyalty WHERE client_id=?', (client_id,))
+    new_count = c2.fetchone()[0]
+    if new_count >= 5:
+        c2.execute('UPDATE loyalty SET available_discounts = available_discounts + 1, rides_count = 0 WHERE client_id=?', (client_id,))
+
+    # Рефералы
+    if rides_before == 0:
+        c2.execute('SELECT referrer_id FROM referrals WHERE referred_id=? AND used=0 LIMIT 1', (client_id,))
+        ref_row = c2.fetchone()
+        if ref_row:
+            referrer_id = ref_row[0]
+            c2.execute('UPDATE referrals SET used=1 WHERE referred_id=?', (client_id,))
+            c2.execute('INSERT OR IGNORE INTO loyalty (client_id) VALUES (?)', (referrer_id,))
+            c2.execute('UPDATE loyalty SET available_discounts = available_discounts + 1 WHERE client_id=?', (referrer_id,))
+    conn2.commit()
+    conn2.close()
+
+    # Клиентская статистика
     if phone:
         increment_client_rides(phone)
 
-# ========== Водители ==========
+# ========== Водители (clients.db) ==========
 def save_driver(driver_id, name=None, phone=None, car_model=None, car_color=None, car_plate=None):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('''
         INSERT OR REPLACE INTO drivers (driver_id, name, phone, car_model, car_color, car_plate)
@@ -253,7 +263,7 @@ def save_driver(driver_id, name=None, phone=None, car_model=None, car_color=None
     conn.close()
 
 def get_driver(driver_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('SELECT * FROM drivers WHERE driver_id=?', (driver_id,))
     row = c.fetchone()
@@ -261,7 +271,7 @@ def get_driver(driver_id):
     return row
 
 def is_driver_allowed(driver_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('SELECT 1 FROM allowed_drivers WHERE driver_id=?', (driver_id,))
     row = c.fetchone()
@@ -269,14 +279,14 @@ def is_driver_allowed(driver_id):
     return row is not None
 
 def add_allowed_driver(driver_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('INSERT OR IGNORE INTO allowed_drivers (driver_id) VALUES (?)', (driver_id,))
     conn.commit()
     conn.close()
 
 def remove_allowed_driver(driver_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('DELETE FROM allowed_drivers WHERE driver_id=?', (driver_id,))
     c.execute('DELETE FROM drivers WHERE driver_id=?', (driver_id,))
@@ -284,7 +294,7 @@ def remove_allowed_driver(driver_id):
     conn.close()
 
 def get_all_drivers():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('SELECT * FROM drivers')
     rows = c.fetchall()
@@ -292,16 +302,16 @@ def get_all_drivers():
     return rows
 
 def get_allowed_drivers_list():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('SELECT driver_id FROM allowed_drivers')
     rows = c.fetchall()
     conn.close()
     return [row[0] for row in rows]
 
-# ========== Лояльность ==========
+# ========== Лояльность (clients.db) ==========
 def get_loyalty(client_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('INSERT OR IGNORE INTO loyalty (client_id) VALUES (?)', (client_id,))
     c.execute('SELECT rides_count, available_discounts FROM loyalty WHERE client_id=?', (client_id,))
@@ -311,21 +321,21 @@ def get_loyalty(client_id):
     return row
 
 def use_discount(client_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('UPDATE loyalty SET available_discounts = available_discounts - 1 WHERE client_id=? AND available_discounts > 0', (client_id,))
     conn.commit()
     conn.close()
 
-# ========== Рефералы ==========
+# ========== Рефералы (clients.db) ==========
 def save_referral(referrer_id, referred_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('INSERT OR IGNORE INTO referrals (referrer_id, referred_id) VALUES (?, ?)', (referrer_id, referred_id))
     conn.commit()
     conn.close()
 
-# ========== Настройки ==========
+# ========== Настройки (taxi.db) ==========
 def get_setting(key):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -350,7 +360,7 @@ def is_workday_active():
 def set_workday_active(active: bool):
     set_setting('workday_active', str(active))
 
-# ========== Отзывы ==========
+# ========== Отзывы (taxi.db) ==========
 def save_review(order_id, review_text):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -358,7 +368,7 @@ def save_review(order_id, review_text):
     conn.commit()
     conn.close()
 
-# ========== Чёрный список ==========
+# ========== Чёрный список (clients.db) ==========
 def block_client(phone, reason=""):
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
