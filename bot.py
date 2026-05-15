@@ -20,7 +20,8 @@ from database import (init_db, add_order, get_order, accept_order,
                       is_workday_active, set_workday_active,
                       update_client, get_client_info,
                       block_client, unblock_client, is_blocked,
-                      get_block_reason)
+                      get_block_reason,
+                      log_start, get_start_count, get_driver_stats, get_all_drivers_stats)   # ← добавьте эти две функции
 from keyboards import *
 
 logging.basicConfig(level=logging.INFO)
@@ -33,12 +34,56 @@ driver_reg_state = {}         # регистрация водителя
 pending_client_geo = {}       # ожидание гео от клиента
 pending_driver_geo = {}       # ожидание гео от водителя
 chat_sessions = {}            # user_id -> (target_id, role)
+pending_queue = {}            # driver_id -> (order_id, driver_info_json)
+order_messages = {}           # order_id -> list of (chat_id, message_id)
 driver_cancel_state = {}      # driver_id -> order_id (для причины отмены)
 review_state = {}             # user_id -> order_id (ожидание отзыва)
+
+def get_main_menu(user_id: int):
+    if is_driver_allowed(user_id):
+        return main_menu_driver()
+    return main_menu()
+
+@dp.message(F.text == "📈 Статистика водителей")
+async def admin_drivers_stats(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    stats = get_all_drivers_stats()
+    if not stats:
+        await message.answer("Нет данных о водителях.")
+        return
+    text = "📈 <b>Статистика водителей</b>\n\n"
+    for s in stats:
+        text += f"👤 {s['name']} (ID: {s['driver_id']})\n🚕 Поездок: {s['total']} | ⭐ Рейтинг: {s['avg_rating']}\n\n"
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("driverstat"))
+async def cmd_driver_stat(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        driver_id = int(message.text.split()[1])
+    except:
+        await message.answer("Используйте: /driverstat <ID водителя>")
+        return
+
+    stats = get_driver_stats(driver_id)
+    driver = get_driver(driver_id)
+    name = driver[1] if driver else "Неизвестный"
+    await message.answer(
+        f"📊 <b>Статистика водителя {name} (ID: {driver_id})</b>\n\n"
+        f"✅ Завершённых поездок: {stats['finished']}\n"
+        f"⭐ Средний рейтинг: {stats['avg_rating']}\n"
+        f"❌ Отмен: {stats['cancelled']}",
+        parse_mode="HTML"
+    )
 
 # ========== Общие команды ==========
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    # Логируем уникального пользователя
+    log_start(message.from_user.id)
+
     args = message.text.split()
     if len(args) > 1 and args[1].startswith("ref"):
         try:
@@ -59,7 +104,7 @@ async def cmd_start(message: types.Message):
         await message.answer_photo(LOGO_FILE_ID, caption=text, parse_mode="HTML")
     else:
         await message.answer(text, parse_mode="HTML")
-    await message.answer("Что хотите сделать?", reply_markup=main_menu())
+    await message.answer("Что хотите сделать?", reply_markup=get_main_menu(message.from_user.id))
 
 @dp.message(Command("id"))
 async def cmd_id(message: types.Message):
@@ -157,6 +202,27 @@ async def admin_enter_driver_plate(message: types.Message):
         pass
     del user_state[admin_id]
 
+@dp.message(Command("driverstat"))
+async def cmd_driver_stat(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        driver_id = int(message.text.split()[1])
+    except:
+        await message.answer("Используйте: /driverstat <ID водителя>")
+        return
+
+    stats = get_driver_stats(driver_id)
+    driver = get_driver(driver_id)
+    name = driver[1] if driver else "Неизвестный"
+    await message.answer(
+        f"📊 <b>Статистика водителя {name} (ID: {driver_id})</b>\n\n"
+        f"✅ Завершённых поездок: {stats['finished']}\n"
+        f"⭐ Средний рейтинг: {stats['avg_rating']}\n"
+        f"❌ Отмен: {stats['cancelled']}",
+        parse_mode="HTML"
+    )
+
 @dp.message(F.text == "➖ Удалить водителя")
 async def admin_remove_driver_prompt(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -250,6 +316,17 @@ async def admin_unblock_phone(message: types.Message):
     await message.answer(f"✅ Клиент {phone} разблокирован.", reply_markup=admin_menu())
     del user_state[message.from_user.id]
 
+@dp.message(F.text == "📊 Статистика")
+async def admin_stats(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    starts = get_start_count()
+    await message.answer(
+        f"📊 <b>Статистика бота</b>\n\n"
+        f"👥 Уникальных пользователей, нажавших /start: <b>{starts}</b>",
+        parse_mode="HTML"
+    )
+
 @dp.message(F.text == "🔴 Закончить рабочий день")
 async def admin_stop_workday(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -266,7 +343,7 @@ async def admin_start_workday(message: types.Message):
 
 @dp.message(F.text == "🔙 Выйти из админки")
 async def admin_exit(message: types.Message):
-    await message.answer("Вы вышли из админ-панели.", reply_markup=main_menu())
+    await message.answer("Вы вышли из админ-панели.", reply_markup=get_main_menu(message.from_user.id))
 
 # ========== Кабинет водителя ==========
 @dp.message(Command("driver"))
@@ -281,6 +358,10 @@ async def cmd_driver(message: types.Message):
         return
     driver_reg_state[driver_id] = {"step": "ask_name"}
     await message.answer("👤 Введите ваше имя:")
+
+@dp.message(F.text == "🚘 Кабинет водителя")
+async def driver_cabinet_button(message: types.Message):
+    await cmd_driver(message)
 
 @dp.message(lambda msg: msg.from_user.id in driver_reg_state)
 async def driver_registration(message: types.Message):
@@ -335,7 +416,19 @@ async def end_shift(message: types.Message):
     if not is_driver_allowed(message.from_user.id):
         return
     set_driver_online(message.from_user.id, False)
-    await message.answer("🛑 Смена завершена.", reply_markup=main_menu())
+    await message.answer("🛑 Смена завершена.", reply_markup=get_main_menu(message.from_user.id))
+
+@dp.message(F.text == "🔙 В главное меню")
+async def driver_back_to_main(message: types.Message):
+    await message.answer("Головне меню", reply_markup=get_main_menu(message.from_user.id))
+
+@dp.message(F.text == "🔙 Вернуться в главное меню")
+async def closed_back_to_main(message: types.Message):
+    await message.answer("Повертаємось до головного меню.", reply_markup=get_main_menu(message.from_user.id))
+
+@dp.message(F.text == "🔙 Вернуться в главное меню")
+async def closed_back_to_main(message: types.Message):
+    await message.answer("Повертаємось до головного меню.", reply_markup=get_main_menu(message.from_user.id))
 
 # ========== Клиентский заказ ==========
 @dp.message(F.text == "🚖 Заказать такси")
@@ -369,7 +462,7 @@ async def contact_received(message: types.Message):
             f"⛔ <b>Доступ заблоковано</b>\n\n"
             f"Ви більше не можете користуватися сервісом через порушення правил.{reason_text}\n\n"
             f"Телефон для зв'язку: +38 075 443 67 57",
-            parse_mode="HTML", reply_markup=main_menu()
+            parse_mode="HTML", reply_markup=get_main_menu(uid)
         )
         del user_state[uid]
         return
@@ -501,7 +594,7 @@ async def confirm_order_client(message: types.Message):
     update_client(uid, state.get("phone"), message.from_user.full_name)
     online = get_online_drivers()
     if not online:
-        await message.answer("😔 Нет свободных водителей.", reply_markup=main_menu())
+        await message.answer("😔 Нет свободных водителей.", reply_markup=get_main_menu(uid))
         return
     discount_msg = "\n💰 Скидка 50% (лояльность)" if state.get("discount_applied") else ""
     try:
@@ -517,6 +610,10 @@ async def confirm_order_client(message: types.Message):
         rides_info = f"🚕 Поїздок: {client_info[3]}"
         if client_info[3] == 0:
             rides_info += " (новий клієнт)"
+    
+    # Запоминаем сообщения, разосланные водителям
+    order_messages[order_id] = []
+    
     for driver_id in online:
         try:
             driver_info_msg = (
@@ -530,8 +627,9 @@ async def confirm_order_client(message: types.Message):
                 f"{discount_msg}"
                 f"ID заказа: {order_id}"
             )
-            await bot.send_message(driver_id, driver_info_msg, parse_mode="HTML",
-                                   reply_markup=driver_accept_order(order_id))
+            msg = await bot.send_message(driver_id, driver_info_msg, parse_mode="HTML",
+                                         reply_markup=driver_accept_order(order_id))
+            order_messages[order_id].append((driver_id, msg.message_id))
             if state.get("from_lat") is not None:
                 await bot.send_location(driver_id, latitude=state["from_lat"], longitude=state["from_lon"])
         except Exception as e:
@@ -550,7 +648,7 @@ async def cancel_searching_order_prompt(message: types.Message):
     row = c.fetchone()
     conn.close()
     if not row:
-        await message.answer("Нет активного поиска.", reply_markup=main_menu())
+        await message.answer("Нет активного поиска.", reply_markup=get_main_menu(message.from_user.id))
         return
     await message.answer("Вы действительно хотите отменить поиск?", reply_markup=confirm_cancel_kb(row[0]))
 
@@ -568,12 +666,12 @@ async def change_order(message: types.Message):
 async def go_back(message: types.Message):
     uid = message.from_user.id
     if uid not in user_state:
-        await message.answer("Главное меню.", reply_markup=main_menu())
+        await message.answer("Главное меню.", reply_markup=get_main_menu(message.from_user.id))
         return
     step = user_state[uid].get("step")
     if step == "get_phone":
         del user_state[uid]
-        await message.answer("Оформление заказа отменено.", reply_markup=main_menu())
+        await message.answer("Оформление заказа отменено.", reply_markup=get_main_menu(message.from_user.id))
     elif step in ("from_address", "waiting_from_text"):
         user_state[uid]["step"] = "get_phone"
         await message.answer("Вернёмся к номеру телефона.", reply_markup=contact_request())
@@ -585,14 +683,14 @@ async def go_back(message: types.Message):
         await message.answer("🏁 <b>Куда едем?</b>", parse_mode="HTML", reply_markup=to_location_method())
     else:
         del user_state[uid]
-        await message.answer("Главное меню.", reply_markup=main_menu())
+        await message.answer("Главное меню.", reply_markup=get_main_menu(message.from_user.id))
 
 @dp.message(F.text == "❌ Отменить")
 async def cancel_order_creation(message: types.Message):
     uid = message.from_user.id
     if uid in user_state:
         del user_state[uid]
-    await message.answer("🚫 Заказ отменён.", reply_markup=main_menu())
+    await message.answer("🚫 Заказ отменён.", reply_markup=get_main_menu(message.from_user.id))
 
 # ========== Бонусы ==========
 @dp.message(F.text == "🎁 Мои бонусы")
@@ -618,7 +716,7 @@ async def invite_friend(message: types.Message):
 
 @dp.message(F.text == "🔙 Назад")
 async def bonus_back(message: types.Message):
-    await message.answer("Главное меню.", reply_markup=main_menu())
+    await message.answer("Главное меню.", reply_markup=get_main_menu(message.from_user.id))
 
 # ========== Чат ==========
 @dp.message(F.text == "💬 Сообщение водителю")
@@ -734,29 +832,15 @@ async def accept_order_handler(callback: types.CallbackQuery):
     # Проверяем, есть ли уже активный заказ
     current_order = get_driver_current_order(driver_id)
     if current_order:
-        # Уже есть активный заказ – можно ли поставить в очередь?
         if get_driver_queued_order(driver_id):
             await callback.answer("У вас уже есть активный заказ и один в очереди. Завершите текущий, чтобы принять новый.", show_alert=True)
             return
-        # Ставим в очередь
-        queue_order(order_id, driver_id, driver_info_json)
-        # Уведомление водителю
+        # Сохраняем данные во временное хранилище для последующего queue_order
+        pending_queue[driver_id] = (order_id, driver_info_json)
         await callback.message.edit_text(
-            f"✅ Заказ #{order_id} поставлен в очередь.\n"
-            f"Он начнётся после завершения текущей поездки.",
-            reply_markup=None
+            "⏳ Через сколько минут вы планируете освободиться?",
+            reply_markup=driver_wait_time_kb(order_id)
         )
-        # Уведомление текущему пассажиру (клиент А) – не отправляем!
-        # Уведомление новому пассажиру (клиент Б)
-        client_id = order[1]
-        await bot.send_message(client_id,
-            "🚖 <b>Ваш заказ принят!</b>\n"
-            f"👤 Водитель: {driver_info['name']} ({driver_info['car']}, {driver_info['plate']})\n\n"
-            "⏳ Водитель сейчас завершает предыдущую поездку.\n"
-            "🕒 Ориентировочное время ожидания: до 15 минут.\n\n"
-            "📍 Как только водитель освободится, он сразу направится к вам.",
-            parse_mode="HTML",
-            reply_markup=client_queued_kb(order_id))
         await callback.answer()
         return
 
@@ -775,6 +859,23 @@ async def accept_order_handler(callback: types.CallbackQuery):
     await callback.message.edit_text(
         f"✅ Вы приняли заказ #{order_id}\n📍 {order[4]} → {order[7]}\n📞 Клиент: {order[8]}",
         reply_markup=driver_order_actions(order_id, bool(get_driver_queued_order(driver_id))))
+
+    # Обновляем сообщения у других водителей
+    if order_id in order_messages:
+        for chat_id, msg_id in order_messages[order_id]:
+            if chat_id == driver_id:
+                continue
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text=f"🔔 Заказ #{order_id} принят водителем {driver_info['name']} ({driver_info['car']}, {driver_info['plate']})",
+                    reply_markup=None
+                )
+            except:
+                pass
+        del order_messages[order_id]
+
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("decline_"))
@@ -802,10 +903,62 @@ async def driver_cancel_reason(message: types.Message):
     client_id = order[1]
     cancel_order(order_id) if order[3] == 'searching' else cancel_queued_order(order_id)
     try:
-        await bot.send_message(client_id, f"❌ Водитель отменил заказ (№{order_id}).\nПричина: {reason}", reply_markup=main_menu())
+        await bot.send_message(client_id, f"❌ Водитель отменил заказ (№{order_id}).\nПричина: {reason}", reply_markup=get_main_menu(message.from_user.id))
     except:
         pass
     await message.answer("Заказ отменён.", reply_markup=driver_main())
+
+@dp.callback_query(lambda c: c.data.startswith("wait_"))
+async def driver_choose_wait_time(callback: types.CallbackQuery):
+    driver_id = callback.from_user.id
+    data = callback.data.split("_")
+    if len(data) != 3:
+        return
+    order_id = int(data[1])
+    minutes = int(data[2])
+
+    # Проверяем, есть ли ожидающие данные
+    if driver_id not in pending_queue or pending_queue[driver_id][0] != order_id:
+        await callback.answer("Данные устарели. Попробуйте снова.", show_alert=True)
+        return
+
+    order = get_order(order_id)
+    if not order or order[3] != 'searching':
+        await callback.answer("Заказ уже не актуален.", show_alert=True)
+        await callback.message.delete()
+        if driver_id in pending_queue:
+            del pending_queue[driver_id]
+        return
+
+    driver_info_json = pending_queue.pop(driver_id)[1]
+
+    # Ставим в очередь
+    queue_order(order_id, driver_id, driver_info_json)
+
+    # Уведомление водителю
+    await callback.message.edit_text(
+        f"✅ Заказ #{order_id} поставлен в очередь.\n"
+        f"Примерное время до освобождения: {minutes} мин.\n"
+        f"Он начнётся после завершения текущей поездки."
+    )
+
+    # Уведомление клиенту (клиент Б)
+    driver = get_driver(driver_id)
+    driver_name = driver[1] if driver else callback.from_user.full_name
+    car_info = f"{driver[3]} {driver[4]}" if driver else "не указано"
+    plate = driver[5] if driver else "не указано"
+
+    await bot.send_message(
+        order[1],
+        "🚖 <b>Ваш заказ принят!</b>\n"
+        f"👤 Водитель: {driver_name} ({car_info}, {plate})\n\n"
+        "⏳ Водитель сейчас завершает предыдущую поездку.\n"
+        f"🕒 Ориентировочное время ожидания: до {minutes} минут.\n\n"
+        "📍 Как только водитель освободится, он сразу направится к вам.",
+        parse_mode="HTML",
+        reply_markup=client_queued_kb(order_id)
+    )
+    await callback.answer()
 
 # ========== Кнопки активного заказа (клиент) ==========
 @dp.message(F.text == "📞 Контакты водителя")
@@ -878,7 +1031,7 @@ async def confirm_cancel_callback(callback: types.CallbackQuery):
             user_state[order[1]] = {"phone": phone, "step": "from_address"}
             await bot.send_message(order[1], "🚫 Поиск отменён. Укажите адрес подачи заново.", reply_markup=from_location_method())
         else:
-            await bot.send_message(order[1], "🚫 Поиск отменён.", reply_markup=main_menu())
+            await bot.send_message(order[1], "🚫 Поиск отменён.", reply_markup=get_main_menu(message.from_user.id))
         await callback.message.edit_text("🚫 Поиск отменён.")
     elif order[3] == 'accepted':
         if order[2]:
@@ -894,7 +1047,7 @@ async def confirm_cancel_callback(callback: types.CallbackQuery):
         if order[2]:
             pending_driver_geo.pop(order[2], None)
         await callback.message.edit_text("🚫 Поездка отменена.")
-        await bot.send_message(order[1], "🚫 Поездка отменена.", reply_markup=main_menu())
+        await bot.send_message(order[1], "🚫 Поездка отменена.", reply_markup=get_main_menu(message.from_user.id))
     elif order[3] == 'queued':
         cancel_queued_order(order_id)
         if order[2]:
@@ -903,7 +1056,7 @@ async def confirm_cancel_callback(callback: types.CallbackQuery):
             except:
                 pass
         await callback.message.edit_text("🚫 Заказ отменён.")
-        await bot.send_message(order[1], "🚫 Заказ отменён.", reply_markup=main_menu())
+        await bot.send_message(order[1], "🚫 Заказ отменён.", reply_markup=get_main_menu(message.from_user.id))
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("decline_cancel_"))
@@ -951,7 +1104,7 @@ async def cancel_queued_order_by_driver(callback: types.CallbackQuery):
         return
     cancel_queued_order(order_id)
     try:
-        await bot.send_message(order[1], "❌ Водитель отменил ваш заказ из очереди. Приносим извинения.", reply_markup=main_menu())
+        await bot.send_message(order[1], "❌ Водитель отменил ваш заказ из очереди. Приносим извинения.", reply_markup=get_main_menu(message.from_user.id))
     except:
         pass
     await bot.send_message(driver_id, "Заказ из очереди отменён.")
@@ -985,7 +1138,7 @@ async def driver_finish(callback: types.CallbackQuery):
     client_id = order[1]
     process_finished_order(order_id)
 
-    await bot.send_message(client_id, "🏁 <b>Поездка завершена.</b> Спасибо!", parse_mode="HTML", reply_markup=main_menu())
+    await bot.send_message(client_id, "🏁 <b>Поездка завершена.</b> Спасибо!", parse_mode="HTML", reply_markup=get_main_menu(client_id))
     await bot.send_message(client_id, "Оцените поездку:", reply_markup=rating_keyboard(order_id))
 
     # Активация очереди
@@ -1054,7 +1207,7 @@ async def review_write_prompt(message: types.Message):
     row = c.fetchone()
     conn.close()
     if not row:
-        await message.answer("Нет заказа для отзыва.", reply_markup=main_menu())
+        await message.answer("Нет заказа для отзыва.", reply_markup=get_main_menu(message.from_user.id))
         return
     review_state[uid] = row[0]
     await message.answer("Напишите ваш отзыв. Для отмены нажмите «⏭ Пропустить».", reply_markup=skip_review_kb())
@@ -1063,7 +1216,7 @@ async def review_write_prompt(message: types.Message):
 async def review_skip(message: types.Message):
     uid = message.from_user.id
     review_state.pop(uid, None)
-    await message.answer("Спасибо за поездку!", reply_markup=main_menu())
+    await message.answer("Спасибо за поездку!", reply_markup=get_main_menu(message.from_user.id))
 
 @dp.message(F.text, lambda msg: msg.from_user.id in review_state)
 async def review_receive_text(message: types.Message):
@@ -1077,13 +1230,13 @@ async def review_receive_text(message: types.Message):
         review_state[uid] = order_id
         return
     save_review(order_id, review_text)
-    await message.answer("Спасибо за ваш отзыв!", reply_markup=main_menu())
+    await message.answer("Спасибо за ваш отзыв!", reply_markup=get_main_menu(message.from_user.id))
 
 @dp.message(F.text == "📋 Мои поездки")
 async def show_history(message: types.Message):
     orders = get_client_last_orders(message.from_user.id)
     if not orders:
-        await message.answer("У вас ещё нет поездок.", reply_markup=main_menu())
+        await message.answer("У вас ещё нет поездок.", reply_markup=get_main_menu(message.from_user.id))
         return
     text = "<b>Последние поездки:</b>\n\n"
     for o in orders:

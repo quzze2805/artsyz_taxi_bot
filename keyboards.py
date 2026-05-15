@@ -11,6 +11,17 @@ def main_menu():
         resize_keyboard=True
     )
 
+def main_menu_driver():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🚖 Заказать такси"), KeyboardButton(text="📋 Мои поездки")],
+            [KeyboardButton(text="🎁 Мои бонусы")],
+            [KeyboardButton(text="💬 Поддержка")],
+            [KeyboardButton(text="🚘 Кабинет водителя")],
+        ],
+        resize_keyboard=True
+    )
+
 def contact_request():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -121,6 +132,7 @@ def driver_main():
         keyboard=[
             [KeyboardButton(text="🔛 Начать смену")],
             [KeyboardButton(text="🔚 Закончить смену")],
+            [KeyboardButton(text="🔙 В главное меню")],
         ],
         resize_keyboard=True
     )
@@ -133,21 +145,32 @@ def driver_accept_order(order_id):
         ]
     )
 
-def driver_order_actions(order_id):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💬 Сообщение клиенту", callback_data=f"chat_{order_id}")],
-            [InlineKeyboardButton(text="📍 Запросить гео клиента", callback_data=f"req_loc_{order_id}")],
-            [InlineKeyboardButton(text="🗺 Отправить гео клиенту", callback_data=f"send_loc_{order_id}")],
-            [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"cancel_by_driver_{order_id}")],
-            [InlineKeyboardButton(text="👋 Я на месте", callback_data=f"arrived_{order_id}")],
-            [InlineKeyboardButton(text="🛑 Завершить поездку", callback_data=f"finish_{order_id}")],
-        ]
-    )
+def driver_order_actions(order_id, has_queue=False):
+    keyboard = [
+        [InlineKeyboardButton(text="💬 Сообщение клиенту", callback_data=f"chat_{order_id}")],
+        [InlineKeyboardButton(text="📍 Запросить гео клиента", callback_data=f"req_loc_{order_id}")],
+    ]
+    if has_queue:
+        keyboard.append([InlineKeyboardButton(text="❌ Отменить следующий заказ", callback_data=f"cancel_queued_{order_id}")])
+    keyboard.extend([
+        [InlineKeyboardButton(text="👋 Я на месте", callback_data=f"arrived_{order_id}")],
+        [InlineKeyboardButton(text="🛑 Завершить поездку", callback_data=f"finish_{order_id}")],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def driver_chat_active():
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="🔕 Завершить чат")]],
+        resize_keyboard=True
+    )
+
+# --- Ожидание в очереди (клиент Б) ---
+def client_queued_kb(order_id: int) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="⏳ Ожидаю")],
+            [KeyboardButton(text="❌ Отменить заказ (очередь)")],
+        ],
         resize_keyboard=True
     )
 
@@ -158,10 +181,18 @@ def admin_menu():
             [KeyboardButton(text="➕ Добавить водителя")],
             [KeyboardButton(text="➖ Удалить водителя")],
             [KeyboardButton(text="📋 Список водителей")],
+            [KeyboardButton(text="📊 Статистика")],
+            [KeyboardButton(text="📈 Статистика водителей")],
             [KeyboardButton(text="🚫 Заблокировать клиента"), KeyboardButton(text="✅ Разблокировать клиента")],
             [KeyboardButton(text="🔴 Закончить рабочий день"), KeyboardButton(text="🟢 Включить рабочий день")],
             [KeyboardButton(text="🔙 Выйти из админки")],
         ],
+        resize_keyboard=True
+    )
+
+def searching_driver_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отменить заказ")]],
         resize_keyboard=True
     )
 
@@ -171,6 +202,15 @@ def confirm_cancel_kb(order_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="✅ Да, отменить", callback_data=f"confirm_cancel_{order_id}")],
             [InlineKeyboardButton(text="❌ Нет", callback_data=f"decline_cancel_{order_id}")],
         ]
+    )
+
+def workday_closed_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📞 Позвонить диспетчеру")],
+            [KeyboardButton(text="🔙 Вернуться в главное меню")],
+        ],
+        resize_keyboard=True
     )
 
 def review_prompt_kb(order_id: int) -> ReplyKeyboardMarkup:
@@ -189,17 +229,15 @@ def skip_review_kb() -> ReplyKeyboardMarkup:
         one_time_keyboard=True
     )
 
-def searching_driver_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="❌ Отменить заказ")]],
-        resize_keyboard=True
-    )
-
-def workday_closed_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📞 Позвонить диспетчеру")],
-            [KeyboardButton(text="🔙 Вернуться в главное меню")],
-        ],
-        resize_keyboard=True
-    )
+def driver_wait_time_kb(order_id: int) -> InlineKeyboardMarkup:
+    minutes = [5, 10, 15, 20, 25, 30, 40, 50, 60]
+    buttons = []
+    row = []
+    for i, m in enumerate(minutes, 1):
+        row.append(InlineKeyboardButton(text=f"{m} мин", callback_data=f"wait_{order_id}_{m}"))
+        if i % 3 == 0:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
