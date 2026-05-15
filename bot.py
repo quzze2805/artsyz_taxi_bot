@@ -397,9 +397,8 @@ async def start_order(message: types.Message):
     if not is_workday_active():
         await message.answer(
             "🌙 Зараз неробочий час. Замовлення через бота тимчасово недоступні.\n\n"
-            "Для замовлення таксі зателефонуйте нам завтра:\n"
-            "📞 +38 075 443 67 57\n\n"
-            "Гарного вечора!",
+            "Скористатися ботом можна з 10:00 до 23:30.\n"
+            "Замовити за телефоном: +380754436757",
             reply_markup=workday_closed_kb()
         )
         return
