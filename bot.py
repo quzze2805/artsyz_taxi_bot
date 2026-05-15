@@ -685,21 +685,6 @@ async def go_back(message: types.Message):
         del user_state[uid]
         await message.answer("Главное меню.", reply_markup=get_main_menu(message.from_user.id))
 
-@dp.message(F.text == "❌ Отменить заказ (очередь)")
-async def client_cancel_queued_prompt(message: types.Message):
-    client_id = message.from_user.id
-    conn = sqlite3.connect("taxi.db")
-    c = conn.cursor()
-    c.execute("SELECT id, driver_id FROM orders WHERE client_id=? AND status='queued' ORDER BY id DESC LIMIT 1", (client_id,))
-    row = c.fetchone()
-    conn.close()
-    if not row:
-        await message.answer("Нет заказа в очереди.")
-        return
-    order_id, driver_id = row
-    await message.answer("Вы уверены, что хотите отменить заказ? Водитель уже знает о нём.",
-                         reply_markup=confirm_cancel_kb(order_id))
-
 @dp.message(F.text == "❌ Отменить")
 async def cancel_order_creation(message: types.Message):
     uid = message.from_user.id
@@ -1010,8 +995,10 @@ async def client_cancel_ride_prompt(message: types.Message):
 # ========== Ожидание в очереди (клиент Б) ==========
 @dp.message(F.text == "⏳ Ожидаю")
 async def client_continue_waiting(message: types.Message):
-    await message.answer("Спасибо за ожидание! Водитель приедет сразу, как освободится. Мы сообщим, когда он будет в пути.",
-                         reply_markup=client_queued_kb(0))  # order_id не важен для этой клавиатуры
+    await message.answer(
+        "Спасибо за ожидание! Водитель приедет сразу, как освободится. Мы сообщим, когда он будет в пути.",
+        reply_markup=get_main_menu(message.from_user.id)   # ← возвращаем меню
+    )
 
 # ========== Callback-обработчики ==========
 @dp.callback_query(lambda c: c.data.startswith("confirm_cancel_"))
@@ -1056,7 +1043,7 @@ async def confirm_cancel_callback(callback: types.CallbackQuery):
             except:
                 pass
         await callback.message.edit_text("🚫 Заказ отменён.")
-        await bot.send_message(order[1], "🚫 Заказ отменён.", reply_markup=get_main_menu(message.from_user.id))
+        await bot.send_message(order[1], "🚫 Заказ отменён.", reply_markup=get_main_menu(order[1]))
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("decline_cancel_"))
@@ -1217,6 +1204,23 @@ async def review_skip(message: types.Message):
     uid = message.from_user.id
     review_state.pop(uid, None)
     await message.answer("Спасибо за поездку!", reply_markup=get_main_menu(message.from_user.id))
+
+@dp.message(F.text == "❌ Отменить заказ (очередь)")
+async def client_cancel_queued_prompt(message: types.Message):
+    client_id = message.from_user.id
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute("SELECT id, driver_id FROM orders WHERE client_id=? AND status='queued' ORDER BY id DESC LIMIT 1", (client_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await message.answer("Нет заказа в очереди.", reply_markup=get_main_menu(client_id))
+        return
+    order_id, driver_id = row
+    await message.answer(
+        "Вы уверены, что хотите отменить заказ? Водитель уже знает о нём.",
+        reply_markup=confirm_cancel_kb(order_id)
+    )
 
 @dp.message(F.text, lambda msg: msg.from_user.id in review_state)
 async def review_receive_text(message: types.Message):
