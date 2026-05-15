@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import sqlite3
+from datetime import datetime
+from dateutil import parser
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
@@ -21,7 +23,11 @@ from database import (init_db, add_order, get_order, accept_order,
                       update_client, get_client_info,
                       block_client, unblock_client, is_blocked,
                       get_block_reason,
-                      log_start, get_start_count, get_driver_stats, get_all_drivers_stats)   # ← добавьте эти две функции
+                      log_start, get_start_count,
+                      get_all_drivers_stats, get_driver_stats,
+                      add_planned_order, get_planned_order, get_client_planned_orders,
+                      cancel_planned_order, get_due_reminders, set_planned_reminded,
+                      activate_planned_order)
 from keyboards import *
 
 logging.basicConfig(level=logging.INFO)
@@ -29,61 +35,25 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # Глобальные состояния
-user_state = {}               # клиентский заказ
-driver_reg_state = {}         # регистрация водителя
-pending_client_geo = {}       # ожидание гео от клиента
-pending_driver_geo = {}       # ожидание гео от водителя
-chat_sessions = {}            # user_id -> (target_id, role)
-pending_queue = {}            # driver_id -> (order_id, driver_info_json)
-order_messages = {}           # order_id -> list of (chat_id, message_id)
-driver_cancel_state = {}      # driver_id -> order_id (для причины отмены)
-review_state = {}             # user_id -> order_id (ожидание отзыва)
+user_state = {}
+driver_reg_state = {}
+pending_client_geo = {}
+pending_driver_geo = {}
+chat_sessions = {}
+driver_cancel_state = {}
+review_state = {}
+order_messages = {}
+pending_queue = {}
 
 def get_main_menu(user_id: int):
     if is_driver_allowed(user_id):
         return main_menu_driver()
     return main_menu()
 
-@dp.message(F.text == "📈 Статистика водителей")
-async def admin_drivers_stats(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    stats = get_all_drivers_stats()
-    if not stats:
-        await message.answer("Нет данных о водителях.")
-        return
-    text = "📈 <b>Статистика водителей</b>\n\n"
-    for s in stats:
-        text += f"👤 {s['name']} (ID: {s['driver_id']})\n🚕 Поездок: {s['total']} | ⭐ Рейтинг: {s['avg_rating']}\n\n"
-    await message.answer(text, parse_mode="HTML")
-
-@dp.message(Command("driverstat"))
-async def cmd_driver_stat(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    try:
-        driver_id = int(message.text.split()[1])
-    except:
-        await message.answer("Используйте: /driverstat <ID водителя>")
-        return
-
-    stats = get_driver_stats(driver_id)
-    driver = get_driver(driver_id)
-    name = driver[1] if driver else "Неизвестный"
-    await message.answer(
-        f"📊 <b>Статистика водителя {name} (ID: {driver_id})</b>\n\n"
-        f"✅ Завершённых поездок: {stats['finished']}\n"
-        f"⭐ Средний рейтинг: {stats['avg_rating']}\n"
-        f"❌ Отмен: {stats['cancelled']}",
-        parse_mode="HTML"
-    )
-
 # ========== Общие команды ==========
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    # Логируем уникального пользователя
     log_start(message.from_user.id)
-
     args = message.text.split()
     if len(args) > 1 and args[1].startswith("ref"):
         try:
@@ -202,27 +172,6 @@ async def admin_enter_driver_plate(message: types.Message):
         pass
     del user_state[admin_id]
 
-@dp.message(Command("driverstat"))
-async def cmd_driver_stat(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    try:
-        driver_id = int(message.text.split()[1])
-    except:
-        await message.answer("Используйте: /driverstat <ID водителя>")
-        return
-
-    stats = get_driver_stats(driver_id)
-    driver = get_driver(driver_id)
-    name = driver[1] if driver else "Неизвестный"
-    await message.answer(
-        f"📊 <b>Статистика водителя {name} (ID: {driver_id})</b>\n\n"
-        f"✅ Завершённых поездок: {stats['finished']}\n"
-        f"⭐ Средний рейтинг: {stats['avg_rating']}\n"
-        f"❌ Отмен: {stats['cancelled']}",
-        parse_mode="HTML"
-    )
-
 @dp.message(F.text == "➖ Удалить водителя")
 async def admin_remove_driver_prompt(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -267,6 +216,50 @@ async def admin_list_drivers(message: types.Message):
         else:
             text += f"ID: {d_id} (не зарегистрирован)\n"
     await message.answer(text, parse_mode="HTML")
+
+@dp.message(F.text == "📊 Статистика")
+async def admin_stats(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    starts = get_start_count()
+    await message.answer(
+        f"📊 <b>Статистика бота</b>\n\n"
+        f"👥 Уникальных пользователей, нажавших /start: <b>{starts}</b>",
+        parse_mode="HTML"
+    )
+
+@dp.message(F.text == "📈 Статистика водителей")
+async def admin_drivers_stats(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    stats = get_all_drivers_stats()
+    if not stats:
+        await message.answer("Нет данных о водителях.")
+        return
+    text = "📈 <b>Статистика водителей</b>\n\n"
+    for s in stats:
+        text += f"👤 {s['name']} (ID: {s['driver_id']})\n🚕 Поездок: {s['total']} | ⭐ Рейтинг: {s['avg_rating']}\n\n"
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("driverstat"))
+async def cmd_driver_stat(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        driver_id = int(message.text.split()[1])
+    except:
+        await message.answer("Используйте: /driverstat <ID водителя>")
+        return
+    stats = get_driver_stats(driver_id)
+    driver = get_driver(driver_id)
+    name = driver[1] if driver else "Неизвестный"
+    await message.answer(
+        f"📊 <b>Статистика водителя {name} (ID: {driver_id})</b>\n\n"
+        f"✅ Завершённых поездок: {stats['finished']}\n"
+        f"⭐ Средний рейтинг: {stats['avg_rating']}\n"
+        f"❌ Отмен: {stats['cancelled']}",
+        parse_mode="HTML"
+    )
 
 @dp.message(F.text == "🚫 Заблокировать клиента")
 async def admin_block_prompt(message: types.Message):
@@ -316,17 +309,6 @@ async def admin_unblock_phone(message: types.Message):
     await message.answer(f"✅ Клиент {phone} разблокирован.", reply_markup=admin_menu())
     del user_state[message.from_user.id]
 
-@dp.message(F.text == "📊 Статистика")
-async def admin_stats(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    starts = get_start_count()
-    await message.answer(
-        f"📊 <b>Статистика бота</b>\n\n"
-        f"👥 Уникальных пользователей, нажавших /start: <b>{starts}</b>",
-        parse_mode="HTML"
-    )
-
 @dp.message(F.text == "🔴 Закончить рабочий день")
 async def admin_stop_workday(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -358,10 +340,6 @@ async def cmd_driver(message: types.Message):
         return
     driver_reg_state[driver_id] = {"step": "ask_name"}
     await message.answer("👤 Введите ваше имя:")
-
-@dp.message(F.text == "🚘 Кабинет водителя")
-async def driver_cabinet_button(message: types.Message):
-    await cmd_driver(message)
 
 @dp.message(lambda msg: msg.from_user.id in driver_reg_state)
 async def driver_registration(message: types.Message):
@@ -422,14 +400,6 @@ async def end_shift(message: types.Message):
 async def driver_back_to_main(message: types.Message):
     await message.answer("Головне меню", reply_markup=get_main_menu(message.from_user.id))
 
-@dp.message(F.text == "🔙 Вернуться в главное меню")
-async def closed_back_to_main(message: types.Message):
-    await message.answer("Повертаємось до головного меню.", reply_markup=get_main_menu(message.from_user.id))
-
-@dp.message(F.text == "🔙 Вернуться в главное меню")
-async def closed_back_to_main(message: types.Message):
-    await message.answer("Повертаємось до головного меню.", reply_markup=get_main_menu(message.from_user.id))
-
 # ========== Клиентский заказ ==========
 @dp.message(F.text == "🚖 Заказать такси")
 async def start_order(message: types.Message):
@@ -450,6 +420,32 @@ async def support(message: types.Message):
     await message.answer(f"📞 {SUPPORT_PHONE}\n💬 {TELEGRAM_CONTACT}")
 
 @dp.message(F.contact)
+async def planned_contact_received(message: types.Message):
+    uid = message.from_user.id
+    if uid not in user_state or user_state[uid].get("step") != "planned_get_phone":
+        return
+    phone = message.contact.phone_number.replace('+', '').replace('-', '').replace(' ', '')
+    # Проверка чёрного списка
+    if is_blocked(phone):
+        reason = get_block_reason(phone)
+        reason_text = f"\n\n<i>Причина: {reason}</i>" if reason else ""
+        await message.answer(
+            f"⛔ <b>Доступ заблоковано</b>\n\n"
+            f"Ви більше не можете користуватися сервісом через порушення правил.{reason_text}",
+            parse_mode="HTML", reply_markup=main_menu()
+        )
+        del user_state[uid]
+        return
+    user_state[uid]["phone"] = phone
+    user_state[uid]["step"] = "planned_time"
+    await message.answer(
+        "Введите дату и время подачи в формате:\n"
+        "ДД.ММ.ГГГГ ЧЧ:ММ\n"
+        "Или «завтра 08:15».",
+        reply_markup=planned_time_kb()
+    )
+
+@dp.message(F.contact)
 async def contact_received(message: types.Message):
     uid = message.from_user.id
     if uid not in user_state or user_state[uid].get("step") != "get_phone":
@@ -462,7 +458,7 @@ async def contact_received(message: types.Message):
             f"⛔ <b>Доступ заблоковано</b>\n\n"
             f"Ви більше не можете користуватися сервісом через порушення правил.{reason_text}\n\n"
             f"Телефон для зв'язку: +38 075 443 67 57",
-            parse_mode="HTML", reply_markup=get_main_menu(uid)
+            parse_mode="HTML", reply_markup=main_menu()
         )
         del user_state[uid]
         return
@@ -476,6 +472,77 @@ async def manual_from(message: types.Message):
         return
     user_state[uid]["step"] = "waiting_from_text"
     await message.answer("Напишите адрес подачи:", reply_markup=back_only_keyboard())
+
+@dp.message(F.text == "❌ Отменить")
+async def cancel_order_creation(message: types.Message):
+    uid = message.from_user.id
+    if uid in user_state:
+        del user_state[uid]
+    await message.answer("🚫 Заказ отменён.", reply_markup=get_main_menu(uid))
+
+@dp.message(F.text == "⬅ Изменить")
+async def change_order(message: types.Message):
+    uid = message.from_user.id
+    if uid not in user_state:
+        return
+    user_state[uid]["step"] = "to_address"
+    user_state[uid].pop("to_address", None)
+    user_state[uid].pop("discount_applied", None)
+    await message.answer("🏁 <b>Куда едем?</b>", parse_mode="HTML", reply_markup=to_location_method())
+
+@dp.message(F.text == "⬅ Назад")
+async def go_back(message: types.Message):
+    uid = message.from_user.id
+    if uid not in user_state:
+        await message.answer("Главное меню.", reply_markup=get_main_menu(uid))
+        return
+
+    step = user_state[uid].get("step")
+
+    # --- Плановые шаги ---
+    if step == "planned_get_phone":
+        del user_state[uid]
+        await message.answer("Планирование отменено.", reply_markup=get_main_menu(uid))
+    elif step == "planned_time":
+        user_state[uid]["step"] = "planned_get_phone"
+        await message.answer("Вернёмся к номеру телефона.", reply_markup=contact_request())
+    elif step in ("planned_from_address", "planned_waiting_from_text"):
+        user_state[uid]["step"] = "planned_time"
+        user_state[uid].pop("from_address", None)
+        user_state[uid].pop("from_lat", None)
+        user_state[uid].pop("from_lon", None)
+        await message.answer("Введите дату и время подачи ещё раз.", reply_markup=planned_time_kb())
+    elif step in ("planned_to_address", "planned_waiting_to_text"):
+        user_state[uid]["step"] = "planned_from_address"
+        user_state[uid].pop("to_address", None)
+        await message.answer("📍 Откуда вас забрать?", reply_markup=from_location_method())
+    elif step == "planned_confirm":
+        user_state[uid]["step"] = "planned_to_address"
+        user_state[uid].pop("to_address", None)
+        await message.answer("🏁 Куда едем?", reply_markup=to_location_method())
+
+    # --- Обычные шаги ---
+    elif step == "get_phone":
+        del user_state[uid]
+        await message.answer("Оформление заказа отменено.", reply_markup=get_main_menu(uid))
+    elif step in ("from_address", "waiting_from_text"):
+        user_state[uid]["step"] = "get_phone"
+        await message.answer("Вернёмся к номеру телефона.", reply_markup=contact_request())
+    elif step in ("to_address", "waiting_to_text"):
+        user_state[uid]["step"] = "from_address"
+        user_state[uid].pop("to_address", None)
+        user_state[uid].pop("from_lat", None)
+        user_state[uid].pop("from_lon", None)
+        await message.answer("📍 <b>Откуда вас забрать?</b>", parse_mode="HTML", reply_markup=from_location_method())
+    elif step == "confirm":
+        user_state[uid]["step"] = "to_address"
+        user_state[uid].pop("to_address", None)
+        user_state[uid].pop("discount_applied", None)
+        await message.answer("🏁 <b>Куда едем?</b>", parse_mode="HTML", reply_markup=to_location_method())
+
+    else:
+        del user_state[uid]
+        await message.answer("Главное меню.", reply_markup=get_main_menu(uid))
 
 @dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "waiting_from_text")
 async def get_from_text(message: types.Message):
@@ -526,7 +593,13 @@ async def popular_place(message: types.Message):
     uid = message.from_user.id
     if uid not in user_state:
         return
-    user_state[uid]["to_address"] = message.text[2:].strip()
+    place_name = message.text[2:].strip()
+    if user_state[uid].get("step") == "planned_to_address":
+        user_state[uid]["to_address"] = place_name
+        user_state[uid]["step"] = "planned_confirm"
+        await planned_confirm_step(message)
+        return
+    user_state[uid]["to_address"] = place_name
     user_state[uid]["step"] = "confirm"
     await confirm_order_step(message)
 
@@ -534,6 +607,10 @@ async def popular_place(message: types.Message):
 async def manual_to(message: types.Message):
     uid = message.from_user.id
     if uid not in user_state:
+        return
+    if user_state[uid].get("step") == "planned_to_address":
+        user_state[uid]["step"] = "planned_waiting_to_text"
+        await message.answer("Напишите адрес назначения:", reply_markup=back_only_keyboard())
         return
     user_state[uid]["step"] = "waiting_to_text"
     await message.answer("Напишите адрес назначения:", reply_markup=back_only_keyboard())
@@ -544,6 +621,13 @@ async def get_to_text(message: types.Message):
     user_state[uid]["to_address"] = message.text
     user_state[uid]["step"] = "confirm"
     await confirm_order_step(message)
+
+@dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "planned_waiting_to_text")
+async def planned_get_to_text(message: types.Message):
+    uid = message.from_user.id
+    user_state[uid]["to_address"] = message.text
+    user_state[uid]["step"] = "planned_confirm"
+    await planned_confirm_step(message)
 
 async def confirm_order_step(message: types.Message):
     uid = message.from_user.id
@@ -592,35 +676,41 @@ async def confirm_order_client(message: types.Message):
                      state.get("to_address"), state.get("phone"),
                      discount=1 if state.get("discount_applied") else 0)
     update_client(uid, state.get("phone"), message.from_user.full_name)
+    await notify_drivers(order_id)
+    await message.answer("⏳ Ищем ближайший автомобиль...", reply_markup=searching_driver_kb())
+    if uid in user_state:
+        phone = user_state[uid].get("phone")
+        user_state[uid] = {"phone": phone, "step": "from_address"}
+
+async def notify_drivers(order_id):
+    order = get_order(order_id)
+    if not order:
+        return
     online = get_online_drivers()
     if not online:
-        await message.answer("😔 Нет свободных водителей.", reply_markup=get_main_menu(uid))
         return
-    discount_msg = "\n💰 Скидка 50% (лояльность)" if state.get("discount_applied") else ""
     try:
-        client_user = await bot.get_chat(uid)
-        client_telegram = f"@{client_user.username}" if client_user.username else f"tg://user?id={uid}"
+        client_user = await bot.get_chat(order[1])
+        client_telegram = f"@{client_user.username}" if client_user.username else f"tg://user?id={order[1]}"
         client_name = client_user.full_name or "не указано"
     except:
-        client_telegram = f"tg://user?id={uid}"
+        client_telegram = f"tg://user?id={order[1]}"
         client_name = "не указано"
-    client_info = get_client_info(state.get("phone"))
+    client_info = get_client_info(order[8])
     rides_info = ""
     if client_info:
         rides_info = f"🚕 Поїздок: {client_info[3]}"
         if client_info[3] == 0:
             rides_info += " (новий клієнт)"
-    
-    # Запоминаем сообщения, разосланные водителям
+    discount_msg = "\n💰 Скидка 50% (лояльность)" if order[10] else ""
     order_messages[order_id] = []
-    
     for driver_id in online:
         try:
             driver_info_msg = (
                 f"🔔 <b>Новый заказ!</b>\n"
-                f"📍 Откуда: {state['from_address']}\n"
-                f"🏁 Куда: {state.get('to_address')}\n"
-                f"📞 Телефон: {state.get('phone')}\n"
+                f"📍 Откуда: {order[4]}\n"
+                f"🏁 Куда: {order[7]}\n"
+                f"📞 Телефон: {order[8]}\n"
                 f"👤 Клиент: {client_name}\n"
                 f"💬 Telegram: {client_telegram}\n"
                 f"{rides_info}\n"
@@ -630,14 +720,10 @@ async def confirm_order_client(message: types.Message):
             msg = await bot.send_message(driver_id, driver_info_msg, parse_mode="HTML",
                                          reply_markup=driver_accept_order(order_id))
             order_messages[order_id].append((driver_id, msg.message_id))
-            if state.get("from_lat") is not None:
-                await bot.send_location(driver_id, latitude=state["from_lat"], longitude=state["from_lon"])
+            if order[5] is not None:
+                await bot.send_location(driver_id, latitude=order[5], longitude=order[6])
         except Exception as e:
             logging.error(f"Failed to notify driver {driver_id}: {e}")
-    await message.answer("⏳ Ищем ближайший автомобиль...", reply_markup=searching_driver_kb())
-    if uid in user_state:
-        phone = user_state[uid].get("phone")
-        user_state[uid] = {"phone": phone, "step": "from_address"}
 
 @dp.message(F.text == "❌ Отменить заказ")
 async def cancel_searching_order_prompt(message: types.Message):
@@ -648,49 +734,129 @@ async def cancel_searching_order_prompt(message: types.Message):
     row = c.fetchone()
     conn.close()
     if not row:
-        await message.answer("Нет активного поиска.", reply_markup=get_main_menu(message.from_user.id))
+        await message.answer("Нет активного поиска.", reply_markup=main_menu())
         return
     await message.answer("Вы действительно хотите отменить поиск?", reply_markup=confirm_cancel_kb(row[0]))
 
-@dp.message(F.text == "⬅ Изменить")
-async def change_order(message: types.Message):
+# ========== Запланированная поездка ==========
+@dp.message(F.text == "🕒 Запланировать поездку")
+async def planned_order_start(message: types.Message):
     uid = message.from_user.id
-    if uid not in user_state:
-        return
-    user_state[uid]["step"] = "to_address"
-    user_state[uid].pop("to_address", None)
-    user_state[uid].pop("discount_applied", None)
-    await message.answer("🏁 <b>Куда едем?</b>", parse_mode="HTML", reply_markup=to_location_method())
+    user_state[uid] = {"step": "planned_get_phone"}
+    await message.answer(
+        "Для оформления запланированной поездки подтвердите номер телефона.",
+        reply_markup=contact_request()   # кнопка «Поделиться номером» и «⬅ Назад»
+    )
 
-@dp.message(F.text == "⬅ Назад")
-async def go_back(message: types.Message):
+@dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "planned_time")
+async def planned_get_time(message: types.Message):
     uid = message.from_user.id
-    if uid not in user_state:
-        await message.answer("Главное меню.", reply_markup=get_main_menu(message.from_user.id))
-        return
-    step = user_state[uid].get("step")
-    if step == "get_phone":
-        del user_state[uid]
-        await message.answer("Оформление заказа отменено.", reply_markup=get_main_menu(message.from_user.id))
-    elif step in ("from_address", "waiting_from_text"):
-        user_state[uid]["step"] = "get_phone"
-        await message.answer("Вернёмся к номеру телефона.", reply_markup=contact_request())
-    elif step in ("to_address", "waiting_to_text"):
-        user_state[uid]["step"] = "from_address"
-        await message.answer("📍 <b>Откуда вас забрать?</b>", parse_mode="HTML", reply_markup=from_location_method())
-    elif step == "confirm":
-        user_state[uid]["step"] = "to_address"
-        await message.answer("🏁 <b>Куда едем?</b>", parse_mode="HTML", reply_markup=to_location_method())
-    else:
-        del user_state[uid]
-        await message.answer("Главное меню.", reply_markup=get_main_menu(message.from_user.id))
+    text = message.text.strip()
+    try:
+        dt = parser.parse(text, dayfirst=True)
+        now = datetime.now()
+        if dt < now:
+            await message.answer("❌ Это время уже прошло. Введите будущую дату и время.")
+            return
+        if not is_workday_active():
+            await message.answer("🌙 Сервис не работает в это время. Выберите другое время.")
+            return
+        user_state[uid]["planned_time"] = dt.isoformat()
+        user_state[uid]["step"] = "planned_from_address"
+        await message.answer("📍 Откуда вас забрать?", reply_markup=from_location_method())
+    except:
+        await message.answer("Не удалось понять дату и время. Попробуйте в формате: ДД.ММ.ГГГГ ЧЧ:ММ или словами, например «завтра 08:15».")
 
-@dp.message(F.text == "❌ Отменить")
-async def cancel_order_creation(message: types.Message):
+@dp.message(F.text == "✏️ Написать адрес вручную")
+async def planned_manual_from(message: types.Message):
     uid = message.from_user.id
-    if uid in user_state:
-        del user_state[uid]
-    await message.answer("🚫 Заказ отменён.", reply_markup=get_main_menu(message.from_user.id))
+    if uid not in user_state or user_state[uid].get("step") != "planned_from_address":
+        return
+    user_state[uid]["step"] = "planned_waiting_from_text"
+    await message.answer("Напишите адрес подачи:", reply_markup=back_only_keyboard())
+
+@dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "planned_waiting_from_text")
+async def planned_get_from_text(message: types.Message):
+    uid = message.from_user.id
+    user_state[uid]["from_address"] = message.text
+    user_state[uid]["from_lat"] = user_state[uid]["from_lon"] = None
+    user_state[uid]["step"] = "planned_to_address"
+    await message.answer(f"Адрес подачи: «{message.text}»")
+    await message.answer("🏁 Куда едем?", reply_markup=to_location_method())
+
+async def planned_confirm_step(message: types.Message):
+    uid = message.from_user.id
+    state = user_state.get(uid)
+    if not state:
+        return
+    phone = state.get("phone", "не указан") or "не указан"
+    from_addr = state.get("from_address") or "не указан"
+    to_addr = state.get("to_address") or "не указан"
+    planned_time = state.get("planned_time", "")[:16]
+    summary = (
+        f"📋 <b>Запланированная поездка</b>\n\n"
+        f"🕒 <b>Время подачи:</b> {planned_time}\n"
+        f"📍 <b>Откуда:</b> {from_addr}\n"
+        f"🏁 <b>Куда:</b> {to_addr}\n"
+        f"📞 <b>Телефон:</b> {phone}\n\n"
+        f"Подтверждаете?"
+    )
+    await message.answer(summary, parse_mode="HTML",
+                         reply_markup=ReplyKeyboardMarkup(
+                             keyboard=[
+                                 [KeyboardButton(text="✅ Подтвердить план")],
+                                 [KeyboardButton(text="⬅ Изменить"), KeyboardButton(text="❌ Отменить")]
+                             ],
+                             resize_keyboard=True
+                         ))
+
+@dp.message(F.text == "✅ Подтвердить план")
+async def planned_confirm(message: types.Message):
+    uid = message.from_user.id
+    state = user_state.pop(uid, None)
+    if not state:
+        return
+    add_planned_order(
+        uid,
+        state.get("from_address"),
+        state.get("from_lat"),
+        state.get("from_lon"),
+        state.get("to_address"),
+        state.get("to_lat"),
+        state.get("to_lon"),
+        state.get("phone"),
+        state["planned_time"]
+    )
+    await message.answer("✅ Поездка запланирована! Мы напомним за 15 минут до подачи.",
+                         reply_markup=get_main_menu(uid))
+
+@dp.message(F.text == "📋 Мои планы")
+async def my_plans(message: types.Message):
+    uid = message.from_user.id
+    plans = get_client_planned_orders(uid)
+    if not plans:
+        await message.answer("У вас нет активных запланированных поездок.")
+        return
+    text = "📋 <b>Ваши запланированные поездки:</b>\n\n"
+    for p in plans:
+        plan_id, planned_time, from_addr, to_addr, status = p
+        text += (f"🕒 {planned_time[:16]}\n📍 {from_addr} → {to_addr}\n"
+                 f"Статус: {status}\n"
+                 f"/cancel_plan_{plan_id} – отменить\n\n")
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command(commands=["cancel_plan"]))
+async def cancel_plan_command(message: types.Message):
+    try:
+        parts = message.text.split("_")
+        if len(parts) < 3:
+            raise ValueError
+        order_id = int(parts[2])
+    except:
+        await message.answer("Неверный формат команды. Используйте: /cancel_plan_<ID>")
+        return
+    cancel_planned_order(order_id)
+    await message.answer("🚫 Запланированная поездка отменена.", reply_markup=get_main_menu(message.from_user.id))
 
 # ========== Бонусы ==========
 @dp.message(F.text == "🎁 Мои бонусы")
@@ -829,13 +995,11 @@ async def accept_order_handler(callback: types.CallbackQuery):
         driver_info = {"name": callback.from_user.full_name, "car": "не указан", "plate": "не указан", "phone": "не указан"}
     driver_info_json = json.dumps(driver_info)
 
-    # Проверяем, есть ли уже активный заказ
     current_order = get_driver_current_order(driver_id)
     if current_order:
         if get_driver_queued_order(driver_id):
             await callback.answer("У вас уже есть активный заказ и один в очереди. Завершите текущий, чтобы принять новый.", show_alert=True)
             return
-        # Сохраняем данные во временное хранилище для последующего queue_order
         pending_queue[driver_id] = (order_id, driver_info_json)
         await callback.message.edit_text(
             "⏳ Через сколько минут вы планируете освободиться?",
@@ -844,7 +1008,6 @@ async def accept_order_handler(callback: types.CallbackQuery):
         await callback.answer()
         return
 
-    # Обычное принятие (водитель свободен)
     accept_order(order_id, driver_id, driver_info_json)
     client_id = order[1]
     client_msg = (
@@ -860,7 +1023,6 @@ async def accept_order_handler(callback: types.CallbackQuery):
         f"✅ Вы приняли заказ #{order_id}\n📍 {order[4]} → {order[7]}\n📞 Клиент: {order[8]}",
         reply_markup=driver_order_actions(order_id, bool(get_driver_queued_order(driver_id))))
 
-    # Обновляем сообщения у других водителей
     if order_id in order_messages:
         for chat_id, msg_id in order_messages[order_id]:
             if chat_id == driver_id:
@@ -878,7 +1040,7 @@ async def accept_order_handler(callback: types.CallbackQuery):
 
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data.startswith("decline_"))
+@dp.callback_query(lambda c: c.data.startswith("reject_"))
 async def decline_order_handler(callback: types.CallbackQuery):
     driver_id = callback.from_user.id
     order_id = int(callback.data.split("_")[1])
@@ -903,7 +1065,7 @@ async def driver_cancel_reason(message: types.Message):
     client_id = order[1]
     cancel_order(order_id) if order[3] == 'searching' else cancel_queued_order(order_id)
     try:
-        await bot.send_message(client_id, f"❌ Водитель отменил заказ (№{order_id}).\nПричина: {reason}", reply_markup=get_main_menu(message.from_user.id))
+        await bot.send_message(client_id, f"❌ Водитель отменил заказ (№{order_id}).\nПричина: {reason}", reply_markup=main_menu())
     except:
         pass
     await message.answer("Заказ отменён.", reply_markup=driver_main())
@@ -917,7 +1079,6 @@ async def driver_choose_wait_time(callback: types.CallbackQuery):
     order_id = int(data[1])
     minutes = int(data[2])
 
-    # Проверяем, есть ли ожидающие данные
     if driver_id not in pending_queue or pending_queue[driver_id][0] != order_id:
         await callback.answer("Данные устарели. Попробуйте снова.", show_alert=True)
         return
@@ -931,18 +1092,14 @@ async def driver_choose_wait_time(callback: types.CallbackQuery):
         return
 
     driver_info_json = pending_queue.pop(driver_id)[1]
-
-    # Ставим в очередь
     queue_order(order_id, driver_id, driver_info_json)
 
-    # Уведомление водителю
     await callback.message.edit_text(
         f"✅ Заказ #{order_id} поставлен в очередь.\n"
         f"Примерное время до освобождения: {minutes} мин.\n"
         f"Он начнётся после завершения текущей поездки."
     )
 
-    # Уведомление клиенту (клиент Б)
     driver = get_driver(driver_id)
     driver_name = driver[1] if driver else callback.from_user.full_name
     car_info = f"{driver[3]} {driver[4]}" if driver else "не указано"
@@ -958,6 +1115,22 @@ async def driver_choose_wait_time(callback: types.CallbackQuery):
         parse_mode="HTML",
         reply_markup=client_queued_kb(order_id)
     )
+
+    if order_id in order_messages:
+        for chat_id, msg_id in order_messages[order_id]:
+            if chat_id == driver_id:
+                continue
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text=f"🔔 Заказ #{order_id} принят водителем {driver_name} ({car_info}, {plate}) и поставлен в очередь",
+                    reply_markup=None
+                )
+            except:
+                pass
+        del order_messages[order_id]
+
     await callback.answer()
 
 # ========== Кнопки активного заказа (клиент) ==========
@@ -992,13 +1165,25 @@ async def client_cancel_ride_prompt(message: types.Message):
         return
     await message.answer("Вы действительно хотите отменить поездку?", reply_markup=confirm_cancel_kb(row[0]))
 
-# ========== Ожидание в очереди (клиент Б) ==========
 @dp.message(F.text == "⏳ Ожидаю")
 async def client_continue_waiting(message: types.Message):
-    await message.answer(
-        "Спасибо за ожидание! Водитель приедет сразу, как освободится. Мы сообщим, когда он будет в пути.",
-        reply_markup=get_main_menu(message.from_user.id)   # ← возвращаем меню
-    )
+    await message.answer("Спасибо за ожидание! Водитель приедет сразу, как освободится. Мы сообщим, когда он будет в пути.",
+                         reply_markup=get_main_menu(message.from_user.id))
+
+@dp.message(F.text == "❌ Отменить заказ (очередь)")
+async def client_cancel_queued_prompt(message: types.Message):
+    client_id = message.from_user.id
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute("SELECT id, driver_id FROM orders WHERE client_id=? AND status='queued' ORDER BY id DESC LIMIT 1", (client_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await message.answer("Нет заказа в очереди.", reply_markup=get_main_menu(client_id))
+        return
+    order_id, driver_id = row
+    await message.answer("Вы уверены, что хотите отменить заказ? Водитель уже знает о нём.",
+                         reply_markup=confirm_cancel_kb(order_id))
 
 # ========== Callback-обработчики ==========
 @dp.callback_query(lambda c: c.data.startswith("confirm_cancel_"))
@@ -1009,7 +1194,6 @@ async def confirm_cancel_callback(callback: types.CallbackQuery):
         return
     order = get_order(order_id)
     if not order:
-        await callback.answer("Заказ не найден.")
         return
     if order[3] == 'searching':
         cancel_order(order_id)
@@ -1018,7 +1202,7 @@ async def confirm_cancel_callback(callback: types.CallbackQuery):
             user_state[order[1]] = {"phone": phone, "step": "from_address"}
             await bot.send_message(order[1], "🚫 Поиск отменён. Укажите адрес подачи заново.", reply_markup=from_location_method())
         else:
-            await bot.send_message(order[1], "🚫 Поиск отменён.", reply_markup=get_main_menu(message.from_user.id))
+            await bot.send_message(order[1], "🚫 Поиск отменён.", reply_markup=get_main_menu(order[1]))
         await callback.message.edit_text("🚫 Поиск отменён.")
     elif order[3] == 'accepted':
         if order[2]:
@@ -1034,7 +1218,7 @@ async def confirm_cancel_callback(callback: types.CallbackQuery):
         if order[2]:
             pending_driver_geo.pop(order[2], None)
         await callback.message.edit_text("🚫 Поездка отменена.")
-        await bot.send_message(order[1], "🚫 Поездка отменена.", reply_markup=get_main_menu(message.from_user.id))
+        await bot.send_message(order[1], "🚫 Поездка отменена.", reply_markup=get_main_menu(order[1]))
     elif order[3] == 'queued':
         cancel_queued_order(order_id)
         if order[2]:
@@ -1072,15 +1256,6 @@ async def request_client_location(callback: types.CallbackQuery):
     await bot.send_message(order[1], "📍 Водитель запрашивает ваше местоположение.", reply_markup=request_location_kb())
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data.startswith("send_loc_"))
-async def send_geo_to_client(callback: types.CallbackQuery):
-    order = get_order(int(callback.data.split("_")[2]))
-    if not order:
-        return
-    pending_driver_geo[callback.from_user.id] = order[1]
-    await bot.send_message(callback.from_user.id, "🗺 Отправьте вашу геопозицию для клиента.", reply_markup=request_location_kb("📍 Моя геопозиция"))
-    await callback.answer()
-
 @dp.callback_query(lambda c: c.data.startswith("cancel_queued_"))
 async def cancel_queued_order_by_driver(callback: types.CallbackQuery):
     driver_id = callback.from_user.id
@@ -1091,11 +1266,10 @@ async def cancel_queued_order_by_driver(callback: types.CallbackQuery):
         return
     cancel_queued_order(order_id)
     try:
-        await bot.send_message(order[1], "❌ Водитель отменил ваш заказ из очереди. Приносим извинения.", reply_markup=get_main_menu(message.from_user.id))
+        await bot.send_message(order[1], "❌ Водитель отменил ваш заказ из очереди. Приносим извинения.", reply_markup=main_menu())
     except:
         pass
     await bot.send_message(driver_id, "Заказ из очереди отменён.")
-    # обновим клавиатуру текущего заказа (убираем кнопку отмены очереди)
     current_order_id = get_driver_current_order(driver_id)
     if current_order_id:
         await bot.send_message(driver_id, "Текущий заказ:", reply_markup=driver_order_actions(current_order_id, False))
@@ -1128,7 +1302,6 @@ async def driver_finish(callback: types.CallbackQuery):
     await bot.send_message(client_id, "🏁 <b>Поездка завершена.</b> Спасибо!", parse_mode="HTML", reply_markup=get_main_menu(client_id))
     await bot.send_message(client_id, "Оцените поездку:", reply_markup=rating_keyboard(order_id))
 
-    # Активация очереди
     queued_id = activate_queued_order(driver_id)
     if queued_id:
         queued_order = get_order(queued_id)
@@ -1194,7 +1367,7 @@ async def review_write_prompt(message: types.Message):
     row = c.fetchone()
     conn.close()
     if not row:
-        await message.answer("Нет заказа для отзыва.", reply_markup=get_main_menu(message.from_user.id))
+        await message.answer("Нет заказа для отзыва.", reply_markup=main_menu())
         return
     review_state[uid] = row[0]
     await message.answer("Напишите ваш отзыв. Для отмены нажмите «⏭ Пропустить».", reply_markup=skip_review_kb())
@@ -1204,23 +1377,6 @@ async def review_skip(message: types.Message):
     uid = message.from_user.id
     review_state.pop(uid, None)
     await message.answer("Спасибо за поездку!", reply_markup=get_main_menu(message.from_user.id))
-
-@dp.message(F.text == "❌ Отменить заказ (очередь)")
-async def client_cancel_queued_prompt(message: types.Message):
-    client_id = message.from_user.id
-    conn = sqlite3.connect("taxi.db")
-    c = conn.cursor()
-    c.execute("SELECT id, driver_id FROM orders WHERE client_id=? AND status='queued' ORDER BY id DESC LIMIT 1", (client_id,))
-    row = c.fetchone()
-    conn.close()
-    if not row:
-        await message.answer("Нет заказа в очереди.", reply_markup=get_main_menu(client_id))
-        return
-    order_id, driver_id = row
-    await message.answer(
-        "Вы уверены, что хотите отменить заказ? Водитель уже знает о нём.",
-        reply_markup=confirm_cancel_kb(order_id)
-    )
 
 @dp.message(F.text, lambda msg: msg.from_user.id in review_state)
 async def review_receive_text(message: types.Message):
@@ -1234,7 +1390,7 @@ async def review_receive_text(message: types.Message):
         review_state[uid] = order_id
         return
     save_review(order_id, review_text)
-    await message.answer("Спасибо за ваш отзыв!", reply_markup=get_main_menu(message.from_user.id))
+    await message.answer("Спасибо за ваш отзыв!", reply_markup=get_main_menu(uid))
 
 @dp.message(F.text == "📋 Мои поездки")
 async def show_history(message: types.Message):
@@ -1252,9 +1408,45 @@ async def show_history(message: types.Message):
         text += (f"🚕 {created_date}\n📍 {o[4]} → {o[7]}\nСтатус: {o[3]}{rating_str}\n\n")
     await message.answer(text, parse_mode="HTML")
 
+@dp.message(F.text == "🔙 Вернуться в главное меню")
+async def closed_back_to_main(message: types.Message):
+    await message.answer("Повертаємось до головного меню.", reply_markup=get_main_menu(message.from_user.id))
+
+@dp.message(F.text == "🚘 Кабинет водителя")
+async def driver_cabinet_button(message: types.Message):
+    await cmd_driver(message)
+
+# ========== Фоновая проверка запланированных поездок ==========
+async def check_planned_orders():
+    while True:
+        try:
+            now = datetime.now().isoformat()
+            due = get_due_reminders(now)
+            for order in due:
+                order_id, client_id, from_addr, _, _, to_addr, _, _, phone, planned_time, _, _, _ = order
+                await bot.send_message(
+                    client_id,
+                    f"🚖 Через 15 минут запланированная поездка!\n"
+                    f"Откуда: {from_addr}\n"
+                    f"Куда: {to_addr}\n"
+                    f"Время: {planned_time[:16]}\n\n"
+                    f"Подтвердите, что планы не изменились.",
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [InlineKeyboardButton(text="✅ Всё в силе", callback_data=f"confirm_plan_{order_id}")],
+                            [InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel_plan_{order_id}")]
+                        ]
+                    )
+                )
+                set_planned_reminded(order_id)
+        except Exception as e:
+            logging.error(f"Planned orders check error: {e}")
+        await asyncio.sleep(30)
+
 # ========== Запуск ==========
 async def main():
     init_db()
+    asyncio.create_task(check_planned_orders())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
