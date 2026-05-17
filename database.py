@@ -4,9 +4,7 @@ from datetime import datetime
 DB_NAME = "taxi.db"
 CLIENTS_DB = "clients.db"
 
-# ========== Инициализация баз ==========
 def init_db():
-    # Основная база (заказы, статус водителей, настройки)
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''
@@ -37,15 +35,44 @@ def init_db():
         )
     ''')
     c.execute('''
+        CREATE TABLE IF NOT EXISTS planned_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            from_address TEXT,
+            from_lat REAL,
+            from_lon REAL,
+            to_address TEXT,
+            to_lat REAL,
+            to_lon REAL,
+            phone TEXT,
+            planned_time TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            reminded INTEGER DEFAULT 0,
+            created_at TEXT
+        )
+    ''')
+    c.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
         )
     ''')
+    # Добавляем новые столбцы, если их нет
+    try:
+        c.execute('ALTER TABLE orders ADD COLUMN is_planned INTEGER DEFAULT 0')
+    except:
+        pass
+    try:
+        c.execute('ALTER TABLE orders ADD COLUMN planned_time TEXT')
+    except:
+        pass
+    try:
+        c.execute('ALTER TABLE orders ADD COLUMN reminded INTEGER DEFAULT 0')
+    except:
+        pass
     conn.commit()
     conn.close()
 
-    # Клиентская база (НЕ УДАЛЯЕТСЯ)
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('''
@@ -106,7 +133,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ========== Клиентская база ==========
 def update_client(telegram_id, phone, name=None):
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
@@ -138,15 +164,14 @@ def get_client_info(phone):
     conn.close()
     return row
 
-# ========== Основная база (заказы) ==========
-def add_order(client_id, from_address, from_lat, from_lon, to_address, phone, discount=0):
+def add_order(client_id, from_address, from_lat, from_lon, to_address, phone, discount=0, is_planned=0, planned_time=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now = datetime.now().isoformat()
     c.execute('''
-        INSERT INTO orders (client_id, status, from_address, from_lat, from_lon, to_address, phone, discount, created_at)
-        VALUES (?, 'searching', ?, ?, ?, ?, ?, ?, ?)
-    ''', (client_id, from_address, from_lat, from_lon, to_address, phone, discount, now))
+        INSERT INTO orders (client_id, status, from_address, from_lat, from_lon, to_address, phone, discount, is_planned, planned_time, created_at)
+        VALUES (?, 'searching', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (client_id, from_address, from_lat, from_lon, to_address, phone, discount, is_planned, planned_time, now))
     order_id = c.lastrowid
     conn.commit()
     conn.close()
@@ -163,6 +188,7 @@ def get_order(order_id):
 def accept_order(order_id, driver_id, driver_info_json):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    c.execute('INSERT OR IGNORE INTO driver_state (driver_id, is_online) VALUES (?, 1)', (driver_id,))
     c.execute('UPDATE orders SET driver_id=?, status="accepted", driver_info=? WHERE id=?',
               (driver_id, driver_info_json, order_id))
     c.execute('UPDATE driver_state SET current_order_id=? WHERE driver_id=?', (order_id, driver_id))
@@ -170,9 +196,9 @@ def accept_order(order_id, driver_id, driver_info_json):
     conn.close()
 
 def queue_order(order_id, driver_id, driver_info_json):
-    """Поставить заказ в очередь для занятого водителя"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    c.execute('INSERT OR IGNORE INTO driver_state (driver_id, is_online) VALUES (?, 1)', (driver_id,))
     c.execute('UPDATE orders SET driver_id=?, status="queued", driver_info=? WHERE id=?',
               (driver_id, driver_info_json, order_id))
     c.execute('UPDATE driver_state SET queued_order_id=? WHERE driver_id=?', (order_id, driver_id))
@@ -180,7 +206,6 @@ def queue_order(order_id, driver_id, driver_info_json):
     conn.close()
 
 def activate_queued_order(driver_id):
-    """Активировать заказ из очереди как текущий"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('SELECT queued_order_id FROM driver_state WHERE driver_id=?', (driver_id,))
@@ -197,7 +222,6 @@ def activate_queued_order(driver_id):
     return None
 
 def cancel_queued_order(order_id):
-    """Отменить заказ в очереди"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('UPDATE orders SET status="cancelled" WHERE id=?', (order_id,))
@@ -298,7 +322,87 @@ def process_finished_order(order_id):
     if phone:
         increment_client_rides(phone)
 
-# ========== Водители (clients.db) ==========
+def add_planned_order(client_id, from_address, from_lat, from_lon, to_address, to_lat, to_lon, phone, planned_time):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    c.execute('''
+        INSERT INTO planned_orders (client_id, from_address, from_lat, from_lon, to_address, to_lat, to_lon, phone, planned_time, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (client_id, from_address, from_lat, from_lon, to_address, to_lat, to_lon, phone, planned_time, now))
+    conn.commit()
+    conn.close()
+
+def get_planned_order(order_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT * FROM planned_orders WHERE id=?', (order_id,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+def get_client_planned_orders(client_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT id, planned_time, from_address, to_address, status FROM planned_orders WHERE client_id=? AND status="pending" ORDER BY planned_time', (client_id,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def cancel_planned_order(order_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('UPDATE planned_orders SET status="cancelled" WHERE id=?', (order_id,))
+    conn.commit()
+    conn.close()
+
+def get_due_reminders(now_iso):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('''SELECT * FROM planned_orders
+                 WHERE status='pending' AND reminded=0 AND planned_time <= ?''',
+              (now_iso,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def set_planned_reminded(order_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('UPDATE planned_orders SET reminded=1 WHERE id=?', (order_id,))
+    conn.commit()
+    conn.close()
+
+def activate_planned_order(order_id):
+    plan = get_planned_order(order_id)
+    if not plan or plan[9] != 'pending':
+        return None
+    new_order_id = add_order(plan[1], plan[2], plan[3], plan[4], plan[5], plan[7])
+    cancel_planned_order(order_id)
+    return new_order_id
+
+def get_planned_orders_to_remind():
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    one_hour_later = now + timedelta(hours=1)
+    now_iso = now.isoformat()
+    later_iso = one_hour_later.isoformat()
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('''SELECT id, client_id, driver_id, planned_time FROM orders
+                 WHERE is_planned=1 AND status='accepted' AND reminded=0
+                 AND planned_time BETWEEN ? AND ?''', (now_iso, later_iso))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def set_planned_reminded_order(order_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('UPDATE orders SET reminded=1 WHERE id=?', (order_id,))
+    conn.commit()
+    conn.close()
+
 def save_driver(driver_id, name=None, phone=None, car_model=None, car_color=None, car_plate=None):
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
@@ -356,7 +460,6 @@ def get_allowed_drivers_list():
     conn.close()
     return [row[0] for row in rows]
 
-# ========== Лояльность (clients.db) ==========
 def get_loyalty(client_id):
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
@@ -374,7 +477,6 @@ def use_discount(client_id):
     conn.commit()
     conn.close()
 
-# ========== Рефералы (clients.db) ==========
 def save_referral(referrer_id, referred_id):
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
@@ -382,7 +484,6 @@ def save_referral(referrer_id, referred_id):
     conn.commit()
     conn.close()
 
-# ========== Настройки (taxi.db) ==========
 def get_setting(key):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -407,7 +508,6 @@ def is_workday_active():
 def set_workday_active(active: bool):
     set_setting('workday_active', str(active))
 
-# ========== Отзывы ==========
 def save_review(order_id, review_text):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -415,7 +515,6 @@ def save_review(order_id, review_text):
     conn.commit()
     conn.close()
 
-# ========== Чёрный список (clients.db) ==========
 def block_client(phone, reason=""):
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
@@ -448,9 +547,7 @@ def get_block_reason(phone):
     conn.close()
     return row[0] if row else None
 
-# ========== Статистика стартов ==========
 def log_start(telegram_id):
-    """Записать уникального пользователя, если ещё нет"""
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     now = datetime.now().isoformat()
@@ -460,7 +557,6 @@ def log_start(telegram_id):
     conn.close()
 
 def get_start_count():
-    """Количество уникальных пользователей, нажавших /start"""
     conn = sqlite3.connect(CLIENTS_DB)
     c = conn.cursor()
     c.execute('SELECT COUNT(*) FROM start_stats')
@@ -468,15 +564,19 @@ def get_start_count():
     conn.close()
     return count
 
-# ========== Статистика водителей ==========
+def get_all_started_users():
+    conn = sqlite3.connect(CLIENTS_DB)
+    c = conn.cursor()
+    c.execute('SELECT telegram_id FROM start_stats')
+    rows = c.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
 def get_driver_stats(driver_id):
-    """Детальная статистика конкретного водителя (заказы из taxi.db)"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # Всего завершённых
     c.execute('SELECT COUNT(*), AVG(rating) FROM orders WHERE driver_id=? AND status="finished"', (driver_id,))
     finished, avg_rating = c.fetchone()
-    # Отменённых
     c.execute('SELECT COUNT(*) FROM orders WHERE driver_id=? AND status="cancelled"', (driver_id,))
     cancelled = c.fetchone()[0]
     conn.close()
@@ -487,15 +587,12 @@ def get_driver_stats(driver_id):
     }
 
 def get_all_drivers_stats():
-    """Краткая статистика всех водителей (водители из clients.db, заказы из taxi.db)"""
-    # Получаем список водителей из clients.db
     conn_clients = sqlite3.connect(CLIENTS_DB)
     c_clients = conn_clients.cursor()
     c_clients.execute('SELECT driver_id, name FROM drivers')
     drivers = c_clients.fetchall()
     conn_clients.close()
 
-    # Для каждого водителя собираем статистику из taxi.db
     conn_orders = sqlite3.connect(DB_NAME)
     c_orders = conn_orders.cursor()
     result = []
