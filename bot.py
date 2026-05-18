@@ -263,6 +263,29 @@ async def cmd_driver_stat(message: types.Message):
         parse_mode="HTML"
     )
 
+@dp.message(Command("reviews"))
+async def cmd_reviews(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute("SELECT id, client_id, rating, review, finished_at FROM orders WHERE review IS NOT NULL ORDER BY finished_at DESC LIMIT 10")
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        await message.answer("Відгуків поки що немає.")
+        return
+    text = "📝 <b>Останні відгуки:</b>\n\n"
+    for r in rows:
+        order_id, client_id, rating, review, finished = r
+        date_str = finished[:10] if finished else "?"
+        rating_str = f"{'⭐'*rating} ({rating}/5)" if rating else "без оцінки"
+        text += f"🚕 Замовлення №{order_id} | {date_str}\n"
+        text += f"👤 Клієнт: {client_id}\n"
+        text += f"⭐ Оцінка: {rating_str}\n"
+        text += f"💬 {review}\n\n"
+    await message.answer(text, parse_mode="HTML")
+
 @dp.message(F.text == "🚫 Заблокувати клієнта")
 async def admin_block_prompt(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -973,6 +996,35 @@ async def cancel_searching_order_prompt(message: types.Message):
         return
     await message.answer("Ви дійсно бажаєте скасувати пошук?", reply_markup=confirm_cancel_kb(row[0]))
 
+@dp.message(F.text == "✍️ Залишити відгук")
+async def review_write_prompt(message: types.Message):
+    uid = message.from_user.id
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute("SELECT id FROM orders WHERE client_id=? AND status='finished' AND review IS NULL ORDER BY id DESC LIMIT 1", (uid,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await message.answer("Немає замовлення для відгуку.", reply_markup=get_main_menu(message.from_user.id))
+        return
+    review_state[uid] = row[0]
+    await message.answer("Напишіть ваш відгук. Для скасування натисніть «⏭ Пропустити».",
+                         reply_markup=skip_review_kb())
+
+@dp.message(F.text, lambda msg: msg.from_user.id in review_state and msg.text != "⏭ Пропустити")
+async def review_receive_text(message: types.Message):
+    uid = message.from_user.id
+    order_id = review_state.pop(uid, None)
+    if not order_id:
+        return
+    review_text = message.text.strip()
+    if not review_text:
+        await message.answer("Відгук не може бути порожнім.")
+        review_state[uid] = order_id
+        return
+    save_review(order_id, review_text)
+    await message.answer("Дякуємо за ваш відгук!", reply_markup=get_main_menu(uid))
+
 # ========== Бонуси ==========
 @dp.message(F.text == "🎁 Мої бонуси")
 async def show_bonuses(message: types.Message):
@@ -1014,44 +1066,34 @@ async def client_open_chat(message: types.Message):
     _, driver_id = row
     chat_sessions[uid] = (driver_id, 'client')
     chat_sessions[driver_id] = (uid, 'driver')
+    # Клиенту показываем клавиатуру чата
     await message.answer("💬 Чат з водієм відкрито. Для виходу натисніть «Завершити чат».",
                          reply_markup=client_chat_active())
+    # Водителю тоже отправляем клавиатуру чата и уведомление
     try:
-        await bot.send_message(driver_id, "_Пасажир відкрив чат._", parse_mode="Markdown")
+        await bot.send_message(driver_id, "_Пасажир відкрив чат._", parse_mode="Markdown",
+                               reply_markup=driver_chat_active())
     except:
         pass
 
 @dp.message(F.text == "🔕 Завершити чат")
 async def close_chat(message: types.Message):
     uid = message.from_user.id
-    if uid in chat_sessions:
-        target_id, role = chat_sessions[uid]
-        chat_sessions.pop(uid, None)
-        chat_sessions.pop(target_id, None)
-        if role == 'client':
-            try:
-                order_id = get_driver_current_order(target_id)
-                await bot.send_message(target_id, "_Пасажир завершив чат._", parse_mode="Markdown")
-                await bot.send_message(target_id, "Чат закрито.", reply_markup=driver_order_actions(order_id, bool(get_driver_queued_order(target_id))) if order_id else driver_main())
-            except:
-                pass
-            await message.answer("Чат завершено.", reply_markup=client_driver_found())
-        else:
-            try:
-                conn = sqlite3.connect("taxi.db")
-                c = conn.cursor()
-                c.execute("SELECT id FROM orders WHERE client_id=? AND status='accepted' ORDER BY id DESC LIMIT 1", (target_id,))
-                row = c.fetchone()
-                conn.close()
-                if row:
-                    await bot.send_message(target_id, "_Водій завершив чат._", parse_mode="Markdown")
-                    await bot.send_message(target_id, "Чат закрито.", reply_markup=client_driver_found())
-            except:
-                pass
-            order_id = get_driver_current_order(uid)
-            await message.answer("Чат завершено.", reply_markup=driver_order_actions(order_id, bool(get_driver_queued_order(uid))) if order_id else driver_main())
-    else:
+    if uid not in chat_sessions:
         await message.answer("Чат не активний.")
+        return
+
+    target_id, role = chat_sessions.pop(uid)
+    chat_sessions.pop(target_id, None)
+
+    # Уведомляем другого участника, если возможно
+    try:
+        await bot.send_message(target_id, "🔕 Чат завершено.", reply_markup=get_main_menu(target_id))
+    except:
+        pass
+
+    # Возвращаем инициатору его меню
+    await message.answer("🔕 Чат завершено.", reply_markup=get_main_menu(uid))
 
 @dp.message(lambda msg: msg.from_user.id in chat_sessions)
 async def relay_chat_message(message: types.Message):
@@ -1080,9 +1122,12 @@ async def driver_open_chat(callback: types.CallbackQuery):
     client_id = order[1]
     chat_sessions[driver_id] = (client_id, 'driver')
     chat_sessions[client_id] = (driver_id, 'client')
+    # Водитель получает клавиатуру чата
     await bot.send_message(driver_id, "💬 Чат з клієнтом відкрито.", reply_markup=driver_chat_active())
+    # Клиенту также отправляем клавиатуру чата и уведомление
     try:
-        await bot.send_message(client_id, "_Водій відкрив чат._", parse_mode="Markdown")
+        await bot.send_message(client_id, "_Водій відкрив чат._", parse_mode="Markdown",
+                               reply_markup=client_chat_active())
     except:
         pass
     await callback.answer()
@@ -1518,6 +1563,61 @@ async def driver_cancel_order_prompt(callback: types.CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=None)
     msg = await bot.send_message(driver_id, "📝 Вкажіть причину скасування замовлення:")
     driver_cancel_state[driver_id] = (order_id, orig_msg_id, msg.message_id)
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("client_confirm_"))
+async def client_confirm_price(callback: types.CallbackQuery):
+    client_id = callback.from_user.id
+    order_id = int(callback.data.split("_")[2])
+    order = get_order(order_id)
+    if not order or order[1] != client_id or order[3] != 'accepted':
+        await callback.answer("Замовлення не знайдено або не активне.", show_alert=True)
+        return
+
+    # Убираем кнопки подтверждения
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    # Показываем клиенту обычные кнопки управления поездкой
+    await bot.send_message(
+        client_id,
+        "✅ <b>Поїздку підтверджено!</b>\n"
+        "Тепер ви можете зв'язатися з водієм або скасувати поїздку.",
+        parse_mode="HTML",
+        reply_markup=client_driver_found()
+    )
+
+    # Уведомляем водителя, что клиент подтвердил
+    driver_id = order[2]
+    if driver_id:
+        try:
+            await bot.send_message(driver_id, "✅ Клієнт підтвердив поїздку.")
+        except:
+            pass
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("client_cancel_"))
+async def client_cancel_price(callback: types.CallbackQuery):
+    client_id = callback.from_user.id
+    order_id = int(callback.data.split("_")[2])
+    order = get_order(order_id)
+    if not order or order[1] != client_id or order[3] != 'accepted':
+        await callback.answer("Замовлення не знайдено або не активне.", show_alert=True)
+        return
+
+    # Отменяем заказ
+    cancel_order(order_id)
+
+    # Уведомляем водителя
+    driver_id = order[2]
+    if driver_id:
+        try:
+            await bot.send_message(driver_id, f"❌ Клієнт скасував поїздку №{order_id} після отримання ціни.", reply_markup=driver_main())
+        except:
+            pass
+
+    # Меняем сообщение клиента
+    await callback.message.edit_text("❌ Поїздку скасовано.")
+    await bot.send_message(client_id, "Ви скасували поїздку та повертаєтесь до головного меню.", reply_markup=get_main_menu(client_id))
     await callback.answer()
 
 # ========== Кнопки активного замовлення (клієнт) ==========
