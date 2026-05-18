@@ -414,6 +414,15 @@ async def start_shift(message: types.Message):
     set_driver_online(message.from_user.id, True)
     await message.answer("✅ Ви на зміні!", reply_markup=driver_main())
 
+    # Проверяем, есть ли плановые заказы в поиске, и показываем их водителю
+    conn = sqlite3.connect("taxi.db")
+    c = conn.cursor()
+    c.execute("SELECT id FROM orders WHERE is_planned=1 AND status='searching'")
+    planned_orders = c.fetchall()
+    conn.close()
+    for (order_id,) in planned_orders:
+        await send_planned_order_to_driver(order_id, message.from_user.id)
+
 @dp.message(F.text == "🔚 Завершити зміну")
 async def end_shift(message: types.Message):
     if not is_driver_allowed(message.from_user.id):
@@ -810,14 +819,27 @@ async def confirm_order_client(message: types.Message):
     update_client(uid, state.get("phone"), message.from_user.full_name)
 
     if is_planned:
-        await notify_drivers(order_id)
-        await message.answer(
-            "✅ <b>Замовлення створено!</b>\n"
-            "🕒 Очікуйте, найближчий водій прийме ваше замовлення.\n"
-            "Ви можете відстежувати статус або скасувати поїздку.",
-            parse_mode="HTML",
-            reply_markup=client_planned_order_kb()
-        )
+        # Проверяем, есть ли водители онлайн
+        online_drivers = get_online_drivers()
+        if online_drivers:
+            await notify_drivers(order_id)
+            await message.answer(
+                "✅ <b>Замовлення створено!</b>\n"
+                "🕒 Очікуйте, найближчий водій прийме ваше замовлення.\n"
+                "Ви можете відстежувати статус або скасувати поїздку.",
+                parse_mode="HTML",
+                reply_markup=client_planned_order_kb()
+            )
+        else:
+            await message.answer(
+                "⚠️ <b>Наразі немає вільних водіїв.</b>\n\n"
+                "Ваше замовлення збережено, але для уточнення часу подачі "
+                "зателефонуйте диспетчеру:\n"
+                "📞 +380754436757\n\n"
+                "Якщо водій з'явиться, замовлення буде опрацьовано автоматично.",
+                parse_mode="HTML",
+                reply_markup=client_planned_order_kb()
+            )
     else:
         await notify_drivers(order_id)
         await message.answer("⏳ Шукаємо найближчий автомобіль...", reply_markup=searching_driver_kb())
@@ -875,6 +897,35 @@ async def notify_drivers(order_id):
                 await bot.send_location(driver_id, latitude=order[5], longitude=order[6])
         except Exception as e:
             logging.error(f"Failed to notify driver {driver_id}: {e}")
+
+async def send_planned_order_to_driver(order_id, driver_id):
+    """Отправляет водителю информацию о плановом заказе, который ещё не принят."""
+    order = get_order(order_id)
+    if not order or order[3] != 'searching':
+        return
+    try:
+        client_user = await bot.get_chat(order[1])
+        client_name = client_user.full_name or "не вказано"
+    except:
+        client_name = "не вказано"
+    planned_time = order[16] if len(order) > 16 and order[16] else "невідомо"
+    text = (
+        f"🔔 <b>Активна запланована поїздка!</b>\n"
+        f"❗️ <b>Запланована поїздка</b>\n"
+        f"🕒 Час подачі: {planned_time}\n"
+        f"📍 Звідки: {order[4]}\n"
+        f"🏁 Куди: {order[7]}\n"
+        f"📞 Телефон: {order[8]}\n"
+        f"👤 Клієнт: {client_name}\n"
+        f"ID замовлення: {order_id}"
+    )
+    try:
+        await bot.send_message(driver_id, text, parse_mode="HTML",
+                               reply_markup=driver_accept_order(order_id))
+        if order[5] is not None:
+            await bot.send_location(driver_id, latitude=order[5], longitude=order[6])
+    except Exception as e:
+        logging.error(f"Failed to notify driver {driver_id} about planned order {order_id}: {e}")
 
 @dp.message(F.text == "❌ Скасувати замовлення")
 async def cancel_searching_order_prompt(message: types.Message):
