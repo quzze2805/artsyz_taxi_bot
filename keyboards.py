@@ -256,3 +256,40 @@ def planned_time_kb():
         keyboard=[[KeyboardButton(text="⬅ Назад")]],
         resize_keyboard=True
     )
+
+def driver_eta_kb(order_id: int) -> InlineKeyboardMarkup:
+    minutes = [5, 10, 15, 20, 25, 30, 40, 50, 60]
+    buttons = []
+    row = []
+    for i, m in enumerate(minutes, 1):
+        row.append(InlineKeyboardButton(text=f"{m} хв", callback_data=f"eta_{order_id}_{m}"))
+        if i % 3 == 0:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def driver_price_kb(order_id: int) -> InlineKeyboardMarkup:
+    prices = [100, 120, 130, 140, 150, 170, 190, 200, 250, 300, 350]
+    buttons = []
+    row = []
+    for i, p in enumerate(prices, 1):
+        row.append(InlineKeyboardButton(text=f"{p} грн", callback_data=f"price_{order_id}_{p}"))
+        if i % 3 == 0:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    # Кнопка "Своя цена"
+    buttons.append([InlineKeyboardButton(text="💬 Вказати свою ціну", callback_data=f"custom_price_{order_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def client_confirm_price_kb(order_id: int) -> InlineKeyboardMarkup:
+    """Инлайн-кнопки для подтверждения клиентом цены поездки"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Підтвердити поїздку", callback_data=f"client_confirm_{order_id}")],
+            [InlineKeyboardButton(text="❌ Скасувати поїздку", callback_data=f"client_cancel_{order_id}")]
+        ]
+    )

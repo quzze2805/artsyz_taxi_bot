@@ -46,6 +46,9 @@ driver_cancel_state = {}
 review_state = {}
 order_messages = {}
 pending_queue = {}
+pending_eta = {}
+pending_price = {}
+pending_custom_price = {}
 
 def get_main_menu(user_id: int):
     if is_driver_allowed(user_id):
@@ -72,10 +75,7 @@ async def cmd_start(message: types.Message):
         f"Якщо зручніше замовити голосом, телефонуйте:\n📞 {SUPPORT_PHONE}\n"
         f"або через Telegram: {TELEGRAM_CONTACT}, відповідаємо дуже швидко."
     )
-    if LOGO_FILE_ID and LOGO_FILE_ID != "СЮДА_FILE_ID_ЛОГОТИПА":
-        await message.answer_photo(LOGO_FILE_ID, caption=text, parse_mode="HTML")
-    else:
-        await message.answer(text, parse_mode="HTML")
+    await message.answer(text, parse_mode="HTML")
     await message.answer("Що бажаєте зробити?", reply_markup=get_main_menu(message.from_user.id))
 
 @dp.message(Command("id"))
@@ -449,9 +449,10 @@ async def driver_my_orders(message: types.Message):
     for o in orders:
         order_id, status, from_addr, to_addr, phone, created = o
         text += f"{status_emoji.get(status, '')} <b>№{order_id}</b> ({status})\n📍 {from_addr} → {to_addr}\n📞 {phone}\n\n"
-        keyboard.inline_keyboard.append(
-            [InlineKeyboardButton(text=f"🛑 Завершити №{order_id}", callback_data=f"force_finish_{order_id}")]
-        )
+        keyboard.inline_keyboard.append([
+            InlineKeyboardButton(text=f"🛑 Завершити №{order_id}", callback_data=f"force_finish_{order_id}"),
+            InlineKeyboardButton(text=f"❌ Скасувати №{order_id}", callback_data=f"force_cancel_{order_id}")
+        ])
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
 
 @dp.callback_query(lambda c: c.data.startswith("force_finish_"))
@@ -475,6 +476,38 @@ async def force_finish_order(callback: types.CallbackQuery):
     pending_client_geo.pop(client_id, None)
     pending_driver_geo.pop(driver_id, None)
     await callback.message.edit_text(f"✅ Замовлення №{order_id} примусово завершено.")
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("force_cancel_"))
+async def force_cancel_order(callback: types.CallbackQuery):
+    driver_id = callback.from_user.id
+    order_id = int(callback.data.split("_")[2])
+    order = get_order(order_id)
+    if not order or order[2] != driver_id:
+        await callback.answer("Замовлення не знайдено або не ваше.", show_alert=True)
+        return
+
+    # Отменяем заказ в зависимости от статуса
+    if order[3] == 'queued':
+        cancel_queued_order(order_id)
+    else:
+        cancel_order(order_id)
+
+    # Уведомляем клиента (если client_id известен)
+    client_id = order[1]
+    if client_id:
+        try:
+            await bot.send_message(client_id, f"❌ Водій скасував замовлення №{order_id}.", reply_markup=main_menu())
+        except:
+            pass
+
+    # Очищаем связанные состояния
+    chat_sessions.pop(client_id, None)
+    chat_sessions.pop(driver_id, None)
+    pending_client_geo.pop(client_id, None)
+    pending_driver_geo.pop(driver_id, None)
+
+    await callback.message.edit_text(f"❌ Замовлення №{order_id} скасовано.")
     await callback.answer()
 
 @dp.message(F.text == "🔙 В головне меню")
@@ -516,7 +549,7 @@ async def planned_order_start(message: types.Message):
         reply_markup=planned_time_kb()
     )
 
-@dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "planned_get_time")
+@dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "planned_get_time" and msg.text != "⬅ Назад")
 async def planned_get_time(message: types.Message):
     uid = message.from_user.id
     text = message.text.strip()
@@ -1054,7 +1087,6 @@ async def driver_open_chat(callback: types.CallbackQuery):
         pass
     await callback.answer()
 
-# ========== Обробка замовлень водієм ==========
 @dp.callback_query(lambda c: c.data.startswith("accept_"))
 async def accept_order_handler(callback: types.CallbackQuery):
     driver_id = callback.from_user.id
@@ -1078,7 +1110,8 @@ async def accept_order_handler(callback: types.CallbackQuery):
         driver_info = {"name": callback.from_user.full_name, "car": "не вказано", "plate": "не вказано", "phone": "не вказано"}
     driver_info_json = json.dumps(driver_info)
 
-    if order[15] == 1:   # is_planned
+    # --- Плановая поездка ---
+    if order[15] == 1:
         accept_order(order_id, driver_id, driver_info_json)
         client_id = order[1]
         client_msg = (
@@ -1112,6 +1145,7 @@ async def accept_order_handler(callback: types.CallbackQuery):
         await callback.answer()
         return
 
+    # --- Обычный заказ ---
     current_order = get_driver_current_order(driver_id)
     if current_order:
         if get_driver_queued_order(driver_id):
@@ -1125,21 +1159,25 @@ async def accept_order_handler(callback: types.CallbackQuery):
         await callback.answer()
         return
 
+    # Принимаем заказ сразу (нет активных)
     accept_order(order_id, driver_id, driver_info_json)
-    client_id = order[1]
-    client_msg = (
-        f"🚖 <b>Водія знайдено!</b>\n"
-        f"Ім'я: {driver_info['name']}\nАвто: {driver_info['car']}\nНомер: {driver_info['plate']}\n"
-        f"Очікуваний час подачі: ~5 хвилин."
+
+    # Запрашиваем время прибытия и сохраняем message_id
+    msg = await bot.send_message(
+        driver_id,
+        f"🚕 Ви прийняли замовлення #{order_id}.\n"
+        f"Будь ласка, вкажіть орієнтовний час прибуття до клієнта:",
+        reply_markup=driver_eta_kb(order_id)
     )
-    try:
-        await bot.send_message(client_id, client_msg, parse_mode="HTML", reply_markup=client_driver_found())
-    except Exception as e:
-        logging.error(f"Notify client {client_id}: {e}")
+    pending_eta[driver_id] = (order_id, order[1], driver_info, msg.message_id)
+
+    # Редактируем исходное сообщение с кнопками «Прийняти/Відхилити»
     await callback.message.edit_text(
         f"✅ Ви прийняли замовлення #{order_id}\n📍 {order[4]} → {order[7]}\n📞 Клієнт: {order[8]}",
-        reply_markup=driver_order_actions(order_id, bool(get_driver_queued_order(driver_id))))
+        reply_markup=None
+    )
 
+    # Убираем заказ из рассылки другим водителям
     if order_id in order_messages:
         for chat_id, msg_id in order_messages[order_id]:
             if chat_id == driver_id:
@@ -1164,8 +1202,10 @@ async def decline_order_handler(callback: types.CallbackQuery):
     order = get_order(order_id)
     if not order or order[3] != 'searching':
         await callback.answer("Замовлення вже не актуальне.", show_alert=True)
-        await callback.message.delete()
+        await callback.message.edit_text("⛔ Замовлення скасовано.")
         return
+
+    await callback.message.edit_text("⛔ Ви відхилили замовлення.")
     driver_cancel_state[driver_id] = order_id
     await bot.send_message(driver_id, "📝 Вкажіть причину відмови від замовлення:")
     await callback.answer()
@@ -1173,19 +1213,144 @@ async def decline_order_handler(callback: types.CallbackQuery):
 @dp.message(lambda msg: msg.from_user.id in driver_cancel_state)
 async def driver_cancel_reason(message: types.Message):
     driver_id = message.from_user.id
-    order_id = driver_cancel_state.pop(driver_id)
+    data = driver_cancel_state.pop(driver_id)
+
+    # Распаковываем данные (может быть просто order_id, или кортеж)
+    if isinstance(data, tuple) and len(data) == 3:
+        order_id, orig_msg_id, cause_msg_id = data
+    else:
+        order_id = data
+        orig_msg_id = cause_msg_id = None
+
     reason = message.text.strip()
     order = get_order(order_id)
-    if not order or order[3] not in ('searching', 'queued'):
+    if not order or order[3] not in ('searching', 'queued', 'accepted'):
         await message.answer("Замовлення вже не актуальне.")
         return
+
     client_id = order[1]
-    cancel_order(order_id) if order[3] == 'searching' else cancel_queued_order(order_id)
+
+    if order[3] == 'searching':
+        cancel_order(order_id)
+    elif order[3] == 'queued':
+        cancel_queued_order(order_id)
+    elif order[3] == 'accepted':
+        cancel_order(order_id)
+
     try:
         await bot.send_message(client_id, f"❌ Водій скасував замовлення (№{order_id}).\nПричина: {reason}", reply_markup=main_menu())
     except:
         pass
+
+    # Редактируем исходное сообщение с кнопками (если есть)
+    if orig_msg_id:
+        try:
+            await bot.edit_message_text("❌ Замовлення скасовано.", chat_id=driver_id, message_id=orig_msg_id)
+        except:
+            pass
+
+    # Редактируем сообщение с просьбой ввести причину
+    if cause_msg_id:
+        try:
+            await bot.edit_message_text("🚫 Замовлення скасовано.", chat_id=driver_id, message_id=cause_msg_id)
+        except:
+            pass
+
     await message.answer("Замовлення скасовано.", reply_markup=driver_main())
+    chat_sessions.pop(client_id, None)
+    chat_sessions.pop(driver_id, None)
+    pending_client_geo.pop(client_id, None)
+    pending_driver_geo.pop(driver_id, None)
+
+@dp.callback_query(lambda c: c.data.startswith("eta_"))
+async def driver_eta_callback(callback: types.CallbackQuery):
+    driver_id = callback.from_user.id
+    if driver_id not in pending_eta:
+        await callback.answer("Дані застаріли або час вже вказано.", show_alert=True)
+        return
+
+    data = callback.data.split("_")
+    if len(data) != 3:
+        return
+    order_id = int(data[1])
+    minutes = int(data[2])
+
+    saved_order_id, client_id, driver_info, eta_msg_id = pending_eta.pop(driver_id)
+    if saved_order_id != order_id:
+        await callback.answer("Невірний заказ.", show_alert=True)
+        return
+
+    order = get_order(order_id)
+    if not order or order[3] != 'accepted':
+        await callback.answer("Замовлення вже не актуальне.", show_alert=True)
+        return
+
+    # Сохраняем для следующего шага (выбор цены)
+    pending_price[driver_id] = (order_id, client_id, driver_info, minutes)
+
+    # Редактируем то же сообщение, в котором были кнопки времени
+    await callback.message.edit_text(
+        f"🚕 Ви прийняли замовлення #{order_id}.\n"
+        f"Орієнтовний час прибуття: <b>{minutes} хв</b>.\n"
+        f"Будь ласка, вкажіть орієнтовну вартість поїздки:",
+        parse_mode="HTML",
+        reply_markup=driver_price_kb(order_id)
+    )
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("price_"))
+async def driver_price_callback(callback: types.CallbackQuery):
+    driver_id = callback.from_user.id
+    if driver_id not in pending_price:
+        await callback.answer("Дані застаріли або вартість вже вказано.", show_alert=True)
+        return
+
+    data = callback.data.split("_")
+    if len(data) != 3:
+        return
+    order_id = int(data[1])
+    price = int(data[2])
+
+    saved_order_id, client_id, driver_info, minutes = pending_price.pop(driver_id)
+    if saved_order_id != order_id:
+        await callback.answer("Невірний заказ.", show_alert=True)
+        return
+
+    order = get_order(order_id)
+    if not order or order[3] != 'accepted':
+        await callback.answer("Замовлення вже не актуальне.", show_alert=True)
+        return
+
+    # Проверяем скидку
+    discount = order[10] if len(order) > 10 else 0
+    price_text = ""
+    if discount == 1:
+        final_price = max(0, price // 2)
+        price_text = f"💰 <s>{price} грн</s> ➔ <b>{final_price} грн</b> (знижка 50%)"
+    else:
+        price_text = f"💰 Орієнтовна вартість: <b>{price} грн</b>"
+
+    client_msg = (
+        f"🚖 <b>Водія знайдено!</b>\n"
+        f"Ім'я: {driver_info['name']}\n"
+        f"Авто: {driver_info['car']}\n"
+        f"Номер: {driver_info['plate']}\n"
+        f"Очікуваний час подачі: ~{minutes} хвилин.\n"
+        f"{price_text}"
+    )
+    try:
+        await bot.send_message(client_id, client_msg, parse_mode="HTML", reply_markup=client_confirm_price_kb(order_id))
+    except Exception as e:
+        logging.error(f"Notify client {client_id} failed: {e}")
+
+    await callback.message.edit_text(
+        f"✅ Ви прийняли замовлення #{order_id}.\n"
+        f"Орієнтовний час прибуття: <b>{minutes} хв</b>.\n"
+        f"Орієнтовна вартість: <b>{price} грн</b>.",
+        parse_mode="HTML",
+        reply_markup=driver_order_actions(order_id, bool(get_driver_queued_order(driver_id)))
+    )
+    await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("wait_"))
 async def driver_choose_wait_time(callback: types.CallbackQuery):
@@ -1248,6 +1413,111 @@ async def driver_choose_wait_time(callback: types.CallbackQuery):
                 pass
         del order_messages[order_id]
 
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("custom_price_"))
+async def driver_custom_price_prompt(callback: types.CallbackQuery):
+    driver_id = callback.from_user.id
+    if driver_id not in pending_price:
+        await callback.answer("Дані застаріли.", show_alert=True)
+        return
+
+    data = callback.data.split("_")
+    if len(data) < 3:
+        return
+    order_id = int(data[2])
+
+    saved_order_id, client_id, driver_info, minutes = pending_price.get(driver_id, (None, None, None, None))
+    if saved_order_id != order_id:
+        await callback.answer("Невірний заказ.", show_alert=True)
+        return
+
+    # Редактируем текущее сообщение (с кнопками цены) на приглашение ввести сумму
+    await callback.message.edit_text("💬 Введіть суму в гривнях (тільки число):")
+    # Сохраняем message_id, чтобы потом заменить это сообщение финальным
+    pending_custom_price[driver_id] = (order_id, client_id, driver_info, minutes, callback.message.message_id)
+    await callback.answer()
+
+@dp.message(lambda msg: msg.from_user.id in pending_custom_price)
+async def custom_price_input(message: types.Message):
+    driver_id = message.from_user.id
+    if driver_id not in pending_custom_price:
+        return
+
+    data = pending_custom_price.pop(driver_id)
+    order_id, client_id, driver_info, minutes, msg_id = data
+
+    order = get_order(order_id)
+    if not order or order[3] != 'accepted':
+        await message.answer("Замовлення вже не актуальне.")
+        return
+
+    try:
+        price = int(message.text.strip())
+        if price <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Будь ласка, введіть ціле додатне число (наприклад, 150).")
+        pending_custom_price[driver_id] = data
+        return
+
+    pending_price.pop(driver_id, None)
+
+    discount = order[10] if len(order) > 10 else 0
+    price_text = ""
+    if discount == 1:
+        final_price = max(0, price // 2)
+        price_text = f"💰 <s>{price} грн</s> ➔ <b>{final_price} грн</b> (знижка 50%)"
+    else:
+        price_text = f"💰 Орієнтовна вартість: <b>{price} грн</b>"
+
+    client_msg = (
+        f"🚖 <b>Водія знайдено!</b>\n"
+        f"Ім'я: {driver_info['name']}\n"
+        f"Авто: {driver_info['car']}\n"
+        f"Номер: {driver_info['plate']}\n"
+        f"Очікуваний час подачі: ~{minutes} хвилин.\n"
+        f"{price_text}"
+    )
+    try:
+        await bot.send_message(client_id, client_msg, parse_mode="HTML", reply_markup=client_confirm_price_kb(order_id))
+    except Exception as e:
+        logging.error(f"Notify client {client_id} failed: {e}")
+
+    # Редактируем то сообщение, где просили ввести сумму
+    try:
+        await bot.edit_message_text(
+            chat_id=driver_id,
+            message_id=msg_id,
+            text=f"✅ Ви прийняли замовлення #{order_id}.\n"
+                 f"Орієнтовний час прибуття: <b>{minutes} хв</b>.\n"
+                 f"Орієнтовна вартість: <b>{price} грн</b>.",
+            parse_mode="HTML",
+            reply_markup=driver_order_actions(order_id, bool(get_driver_queued_order(driver_id)))
+        )
+    except Exception as e:
+        logging.error(f"Failed to edit custom price message: {e}")
+        await message.answer(
+            f"✅ Ви прийняли замовлення #{order_id}.\n"
+            f"Орієнтовний час прибуття: <b>{minutes} хв</b>.\n"
+            f"Орієнтовна вартість: <b>{price} грн</b>.",
+            parse_mode="HTML",
+            reply_markup=driver_order_actions(order_id, bool(get_driver_queued_order(driver_id)))
+        )
+
+@dp.callback_query(lambda c: c.data.startswith("cancel_order_"))
+async def driver_cancel_order_prompt(callback: types.CallbackQuery):
+    driver_id = callback.from_user.id
+    order_id = int(callback.data.split("_")[2])
+    order = get_order(order_id)
+    if not order or order[2] != driver_id or order[3] != 'accepted':
+        await callback.answer("Замовлення не знайдено або не є активним.", show_alert=True)
+        return
+
+    orig_msg_id = callback.message.message_id
+    await callback.message.edit_reply_markup(reply_markup=None)
+    msg = await bot.send_message(driver_id, "📝 Вкажіть причину скасування замовлення:")
+    driver_cancel_state[driver_id] = (order_id, orig_msg_id, msg.message_id)
     await callback.answer()
 
 # ========== Кнопки активного замовлення (клієнт) ==========
@@ -1528,6 +1798,13 @@ async def show_history(message: types.Message):
 @dp.message(F.text == "🔙 Повернутися в головне меню")
 async def closed_back_to_main(message: types.Message):
     await message.answer("Повертаємось до головного меню.", reply_markup=get_main_menu(message.from_user.id))
+
+@dp.message()
+async def unhandled_debug(message: types.Message):
+    uid = message.from_user.id
+    state = user_state.get(uid)
+    logging.warning(f"UNHANDLED message: user={uid}, text={message.text}, state={state}")
+    await message.answer("⚠️ Команда не розпізнана. Поверніться до головного меню.", reply_markup=get_main_menu(uid))
 
 @dp.message(F.text == "🚘 Кабінет водія")
 async def driver_cabinet_button(message: types.Message):
