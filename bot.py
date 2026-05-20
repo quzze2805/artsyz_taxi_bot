@@ -371,6 +371,22 @@ async def admin_broadcast_send(message: types.Message):
     await message.answer(f"✅ Розсилка виконана. Отримали: {success}/{len(users)}", reply_markup=admin_menu())
     del user_state[message.from_user.id]
 
+@dp.message(F.text, lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_broadcast")
+async def admin_broadcast_send(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    text = message.text.strip()
+    users = get_all_started_users()
+    success = 0
+    for uid in users:
+        try:
+            await bot.send_message(uid, text)
+            success += 1
+        except:
+            pass
+    await message.answer(f"✅ Розсилка виконана. Отримали: {success}/{len(users)}", reply_markup=admin_menu())
+    del user_state[message.from_user.id]
+
 @dp.message(F.text == "🔙 Вийти з адмінки")
 async def admin_exit(message: types.Message):
     await message.answer("Ви вийшли з адмін-панелі.", reply_markup=get_main_menu(message.from_user.id))
