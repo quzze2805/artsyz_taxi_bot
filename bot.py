@@ -6,7 +6,7 @@ from datetime import datetime
 from dateutil import parser
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from config import BOT_TOKEN, LOGO_FILE_ID, SUPPORT_PHONE, SERVICE_NAME, ADMIN_IDS, TELEGRAM_CONTACT
 from database import (init_db, add_order, get_order, accept_order,
                       set_driver_online, get_online_drivers, get_driver_current_order,
@@ -210,14 +210,51 @@ async def admin_list_drivers(message: types.Message):
     if not allowed:
         await message.answer("Немає водіїв.")
         return
+
+    online_drivers = get_online_drivers()
+
     text = "📋 <b>Водії:</b>\n\n"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+
     for d_id in allowed:
         d = get_driver(d_id)
+        status_icon = "🟢" if d_id in online_drivers else "🔴"
         if d:
-            text += f"ID: {d[0]} | {d[1]} | {d[2]} | {d[3]} {d[4]} ({d[5]})\n"
+            text += f"{status_icon} ID: {d[0]} | {d[1]} | {d[2]} | {d[3]} {d[4]} ({d[5]})\n"
         else:
-            text += f"ID: {d_id} (не зареєстрований)\n"
-    await message.answer(text, parse_mode="HTML")
+            text += f"{status_icon} ID: {d_id} (не зареєстрований)\n"
+
+        # Если водитель онлайн — показываем кнопку принудительного завершения смены
+        if d_id in online_drivers:
+            keyboard.inline_keyboard.append(
+                [InlineKeyboardButton(text=f"🛑 Завершити зміну для {d[1] if d else d_id}",
+                                      callback_data=f"admin_endshift_{d_id}")]
+            )
+
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard if keyboard.inline_keyboard else None)
+
+@dp.callback_query(lambda c: c.data.startswith("admin_endshift_"))
+async def admin_force_end_shift(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Доступ заборонено.", show_alert=True)
+        return
+
+    driver_id = int(callback.data.split("_")[2])
+
+    # Снимаем водителя со смены
+    set_driver_online(driver_id, False)
+
+    # Уведомляем водителя
+    try:
+        await bot.send_message(driver_id, "🛑 Адміністратор примусово завершив вашу зміну.", reply_markup=driver_main())
+    except:
+        pass
+
+    await callback.answer(f"✅ Зміну водія {driver_id} завершено.", show_alert=True)
+
+    # Обновляем сообщение со списком (повторно вызываем ту же функцию, но для callback.message)
+    # Просто заново выводим список
+    await admin_list_drivers(callback.message)
 
 @dp.message(F.text == "📊 Статистика")
 async def admin_stats(message: types.Message):
@@ -565,7 +602,13 @@ async def start_order(message: types.Message):
         )
         return
     user_state[message.from_user.id] = {"step": "get_phone"}
-    await message.answer("Для оформлення замовлення підтвердьте номер телефону.",
+    await message.answer(
+        "📱 Для замовлення таксі потрібен ваш номер телефону.\n"
+        "<i>Він використовується лише для зв'язку водія з вами. "
+        "Номер не показується іншим клієнтам і не передається третім особам.</i>",
+        parse_mode="HTML"
+    )
+    await message.answer("Будь ласка, натисніть кнопку нижче, щоб поділитися номером:",
                          reply_markup=contact_request())
 
 @dp.message(F.text == "🕒 Запланувати поїздку (Тестування)")
@@ -913,8 +956,21 @@ async def confirm_order_client(message: types.Message):
                 reply_markup=client_planned_order_kb()
             )
     else:
-        await notify_drivers(order_id)
-        await message.answer("⏳ Шукаємо найближчий автомобіль...", reply_markup=searching_driver_kb())
+        # Обычный заказ
+        online_drivers = get_online_drivers()
+        if online_drivers:
+            await notify_drivers(order_id)
+            await message.answer("⏳ Шукаємо найближчий автомобіль...", reply_markup=searching_driver_kb())
+        else:
+            await message.answer(
+                "⚠️ <b>Наразі немає вільних водіїв.</b>\n\n"
+                "Усі водії зайняті або не на зміні.\n"
+                "Будь ласка, зателефонуйте диспетчеру для оформлення замовлення:\n"
+                "📞 +380754436757\n\n"
+                "<i>Спробуйте пізніше або скористайтесь кнопкою «🕒 Запланувати поїздку».</i>",
+                parse_mode="HTML",
+                reply_markup=get_main_menu(uid)
+            )
 
     if uid in user_state:
         phone = user_state[uid].get("phone")
