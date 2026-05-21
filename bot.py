@@ -51,9 +51,13 @@ pending_price = {}
 pending_custom_price = {}
 
 def get_main_menu(user_id: int):
-    if is_driver_allowed(user_id):
+    if user_id in ADMIN_IDS:
+        # админ видит админ-кнопку; если ещё и водитель — кабинет водителя тоже будет
+        return main_menu_admin(is_driver=is_driver_allowed(user_id))
+    elif is_driver_allowed(user_id):
         return main_menu_driver()
-    return main_menu()
+    else:
+        return main_menu()
 
 # ========== Загальні команди ==========
 @dp.message(Command("start"))
@@ -427,6 +431,10 @@ async def admin_broadcast_send(message: types.Message):
 @dp.message(F.text == "🔙 Вийти з адмінки")
 async def admin_exit(message: types.Message):
     await message.answer("Ви вийшли з адмін-панелі.", reply_markup=get_main_menu(message.from_user.id))
+
+@dp.message(F.text == "🚘 Кабінет водія")
+async def driver_cabinet_button(message: types.Message):
+    await cmd_driver(message)
 
 # ========== Кабінет водія ==========
 @dp.message(Command("driver"))
@@ -1971,12 +1979,15 @@ async def show_history(message: types.Message):
 async def closed_back_to_main(message: types.Message):
     await message.answer("Повертаємось до головного меню.", reply_markup=get_main_menu(message.from_user.id))
 
-@dp.message()
-async def unhandled_debug(message: types.Message):
-    uid = message.from_user.id
-    state = user_state.get(uid)
-    logging.warning(f"UNHANDLED message: user={uid}, text={message.text}, state={state}")
-    await message.answer("⚠️ Команда не розпізнана. Поверніться до головного меню.", reply_markup=get_main_menu(uid))
+@dp.message(Command("admin"))
+async def cmd_admin(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    await message.answer("🔐 Адмін-панель:", reply_markup=admin_menu())
+
+@dp.message(F.text == "🔐 Адмін-панель")
+async def admin_panel_button(message: types.Message):
+    await cmd_admin(message)
 
 @dp.message(F.text == "🚘 Кабінет водія")
 async def driver_cabinet_button(message: types.Message):

@@ -293,3 +293,15 @@ def client_confirm_price_kb(order_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="❌ Скасувати поїздку", callback_data=f"client_cancel_{order_id}")]
         ]
     )
+
+def main_menu_admin(is_driver=False):
+    keyboard = [
+        [KeyboardButton(text="🚖 Замовити таксі"), KeyboardButton(text="📋 Мої поїздки")],
+        [KeyboardButton(text="🕒 Запланувати поїздку")],
+        [KeyboardButton(text="🎁 Мої бонуси")],
+        [KeyboardButton(text="💬 Підтримка")],
+    ]
+    if is_driver:
+        keyboard.append([KeyboardButton(text="🚘 Кабінет водія")])
+    keyboard.append([KeyboardButton(text="🔐 Адмін-панель")])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
