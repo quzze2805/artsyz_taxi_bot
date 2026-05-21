@@ -70,6 +70,10 @@ def init_db():
         c.execute('ALTER TABLE orders ADD COLUMN reminded INTEGER DEFAULT 0')
     except:
         pass
+    try:
+        c.execute('ALTER TABLE orders ADD COLUMN comment TEXT')
+    except:
+        pass
     conn.commit()
     conn.close()
 
@@ -164,14 +168,14 @@ def get_client_info(phone):
     conn.close()
     return row
 
-def add_order(client_id, from_address, from_lat, from_lon, to_address, phone, discount=0, is_planned=0, planned_time=None):
+def add_order(client_id, from_address, from_lat, from_lon, to_address, phone, discount=0, is_planned=0, planned_time=None, comment=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now = datetime.now().isoformat()
     c.execute('''
-        INSERT INTO orders (client_id, status, from_address, from_lat, from_lon, to_address, phone, discount, is_planned, planned_time, created_at)
-        VALUES (?, 'searching', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (client_id, from_address, from_lat, from_lon, to_address, phone, discount, is_planned, planned_time, now))
+        INSERT INTO orders (client_id, status, from_address, from_lat, from_lon, to_address, phone, discount, is_planned, planned_time, comment, created_at)
+        VALUES (?, 'searching', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (client_id, from_address, from_lat, from_lon, to_address, phone, discount, is_planned, planned_time, comment, now))
     order_id = c.lastrowid
     conn.commit()
     conn.close()

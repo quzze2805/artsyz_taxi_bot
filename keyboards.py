@@ -55,12 +55,24 @@ def confirm_order_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="✅ Підтвердити замовлення")],
+            [KeyboardButton(text="💬 Коментар до замовлення")],
             [KeyboardButton(text="⬅ Змінити"), KeyboardButton(text="❌ Скасувати")]
         ],
         resize_keyboard=True
     )
 
 def apply_discount_kb(has_discounts):
+    if has_discounts:
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="✅ Підтвердити замовлення (зі знижкою 50%)")],
+                [KeyboardButton(text="✅ Підтвердити замовлення (міжмісто, без знижки)")],
+                [KeyboardButton(text="💬 Коментар до замовлення")],
+                [KeyboardButton(text="⬅ Змінити"), KeyboardButton(text="❌ Скасувати")]
+            ],
+            resize_keyboard=True
+        )
+    return confirm_order_kb()
     if has_discounts:
         return ReplyKeyboardMarkup(
             keyboard=[

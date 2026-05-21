@@ -871,12 +871,15 @@ async def confirm_order_step(message: types.Message):
         to_addr = state.get("to_address") or "не вказано"
         phone = state.get("phone") or "не вказано"
         planned_time = state.get("planned_time")
+        comment = state.get("comment", "")
+        comment_text = f"\n💬 Коментар: {comment}" if comment else ""
         summary = (
             f"📋 <b>Запланована поїздка</b>\n\n"
             f"🕒 Час подачі: {planned_time}\n"
             f"📍 Звідки: {from_addr}\n"
             f"🏁 Куди: {to_addr}\n"
-            f"📞 Телефон: {phone}\n\n"
+            f"📞 Телефон: {phone}"
+            f"{comment_text}\n\n"
             f"Підтверджуєте?"
         )
         await message.answer(summary, parse_mode="HTML", reply_markup=confirm_order_kb())
@@ -889,11 +892,15 @@ async def confirm_order_step(message: types.Message):
     phone = state.get("phone") or "не вказано"
     from_addr = state.get("from_address") or "не вказано"
     to_addr = state.get("to_address") or "не вказано"
+    comment = state.get("comment", "")
+    comment_text = f"\n💬 Коментар: {comment}" if comment else ""
     summary = (
         f"📋 <b>Ваше замовлення:</b>\n"
         f"📍 Звідки: {from_addr}\n"
         f"🏁 Куди: {to_addr}\n"
-        f"📞 Телефон: {phone}{discount_text}\n\n"
+        f"📞 Телефон: {phone}"
+        f"{comment_text}"
+        f"{discount_text}\n\n"
         f"<i>⚠️ Будь ласка, підтверджуйте замовлення лише якщо ви дійсно плануєте поїздку.</i>\n"
         f"<i>Неправдиві виклики призводять до блокування акаунта.</i>\n\n"
         f"Все вірно?"
@@ -906,6 +913,26 @@ async def confirm_discount(message: types.Message):
     if uid in user_state:
         user_state[uid]["discount_applied"] = True
     await confirm_order_client(message)
+
+@dp.message(F.text == "💬 Коментар до замовлення")
+async def add_comment_prompt(message: types.Message):
+    uid = message.from_user.id
+    if uid not in user_state:
+        return
+    user_state[uid]["step"] = "writing_comment"
+    await message.answer("✍️ Напишіть ваш коментар до замовлення:", reply_markup=back_only_keyboard())
+
+@dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "writing_comment" and msg.text != "⬅ Назад")
+async def receive_comment(message: types.Message):
+    uid = message.from_user.id
+    text = message.text.strip()
+    if not text:
+        await message.answer("❌ Коментар не може бути порожнім. Введіть текст або натисніть «⬅ Назад».")
+        return
+    user_state[uid]["comment"] = text
+    user_state[uid]["step"] = "confirm"
+    await message.answer(f"✅ Коментар додано: «{text}»")
+    await confirm_order_step(message)   # возвращаем к подтверждению
 
 @dp.message(F.text == "✅ Підтвердити замовлення (міжмісто, без знижки)")
 async def confirm_no_discount(message: types.Message):
@@ -936,7 +963,8 @@ async def confirm_order_client(message: types.Message):
         state.get("phone"),
         discount=1 if state.get("discount_applied") else 0,
         is_planned=is_planned,
-        planned_time=planned_time
+        planned_time=planned_time,
+        comment=state.get("comment", "")
     )
 
     update_client(uid, state.get("phone"), message.from_user.full_name)
@@ -1006,10 +1034,16 @@ async def notify_drivers(order_id):
             rides_info += " (новий клієнт)"
     discount_msg = "\n💰 Знижка 50% (лояльність)" if order[10] else ""
 
+    # Позначка для запланованої поїздки
     planned_mark = ""
-    if len(order) > 15 and order[15] == 1:
+    if len(order) > 15 and order[15] == 1:   # is_planned
         planned_time = order[16] if order[16] else "невідомо"
         planned_mark = f"❗️ <b>Запланована поїздка</b>\n🕒 Час подачі: {planned_time}\n"
+
+    # Коментар до замовлення
+    comment_text = ""
+    if len(order) > 18 and order[18]:
+        comment_text = f"💬 Коментар: {order[18]}\n"
 
     order_messages[order_id] = []
     for driver_id in online:
@@ -1023,6 +1057,7 @@ async def notify_drivers(order_id):
                 f"👤 Клієнт: {client_name}\n"
                 f"💬 Telegram: {client_telegram}\n"
                 f"{rides_info}\n"
+                f"{comment_text}"
                 f"{discount_msg}"
                 f"ID замовлення: {order_id}"
             )
@@ -1045,6 +1080,8 @@ async def send_planned_order_to_driver(order_id, driver_id):
     except:
         client_name = "не вказано"
     planned_time = order[16] if len(order) > 16 and order[16] else "невідомо"
+    # Комментарий к заказу (индекс 17, если поле добавлено)
+    comment_text = f"\n💬 Коментар: {order[17]}" if len(order) > 17 and order[17] else ""
     text = (
         f"🔔 <b>Активна запланована поїздка!</b>\n"
         f"❗️ <b>Запланована поїздка</b>\n"
@@ -1052,7 +1089,8 @@ async def send_planned_order_to_driver(order_id, driver_id):
         f"📍 Звідки: {order[4]}\n"
         f"🏁 Куди: {order[7]}\n"
         f"📞 Телефон: {order[8]}\n"
-        f"👤 Клієнт: {client_name}\n"
+        f"👤 Клієнт: {client_name}"
+        f"{comment_text}\n"
         f"ID замовлення: {order_id}"
     )
     try:
