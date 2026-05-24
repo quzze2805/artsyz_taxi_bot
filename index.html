@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
-        body { margin: 0; }
+        body { margin: 0; background: #fff; }
         #map { width: 100vw; height: 100vh; }
     </style>
 </head>
@@ -18,11 +18,11 @@
         const driverId = params.get('driver_id');
 
         if (!driverId) {
-            alert('Невідомий водій');
+            document.body.innerHTML = '<h2 style="text-align:center;margin-top:40vh;">Невідомий водій</h2>';
             throw new Error('Driver ID missing');
         }
 
-        // Светлая карта OpenStreetMap (чёткие дороги)
+        // Светлая карта OpenStreetMap
         const map = L.map('map').setView([46.0, 30.0], 13);
         L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
