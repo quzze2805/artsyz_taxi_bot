@@ -52,6 +52,7 @@ pending_eta = {}
 pending_price = {}
 pending_custom_price = {}
 driver_locations = {}  # { driver_id: { 'lat': ..., 'lon': ..., 'timestamp': ... } }
+client_order_msg_ids = {}  # {order_id: [msg_id, msg_id, ...]}
 
 def get_main_menu(user_id: int):
     if user_id in ADMIN_IDS:
@@ -739,6 +740,7 @@ async def contact_received_universal(message: types.Message):
         return
 
     user_state[uid]["phone"] = phone
+    # Переход к адресу подачи
     user_state[uid]["step"] = "from_address"
     await message.answer("📍 <b>Звідки вас забрати?</b>", parse_mode="HTML", reply_markup=from_location_method())
 
@@ -749,13 +751,6 @@ async def manual_from(message: types.Message):
         return
     user_state[uid]["step"] = "waiting_from_text"
     await message.answer("Напишіть адресу подачі:", reply_markup=back_only_keyboard())
-
-@dp.message(F.text == "❌ Скасувати")
-async def cancel_order_creation(message: types.Message):
-    uid = message.from_user.id
-    if uid in user_state:
-        del user_state[uid]
-    await message.answer("🚫 Замовлення скасовано.", reply_markup=get_main_menu(uid))
 
 @dp.message(F.text == "⬅ Змінити")
 async def change_order(message: types.Message):
@@ -1589,7 +1584,11 @@ async def driver_price_callback(callback: types.CallbackQuery):
         f"{price_text}"
     )
     try:
-        await bot.send_message(client_id, client_msg, parse_mode="HTML", reply_markup=client_confirm_price_kb(order_id))
+        msg_price = await bot.send_message(client_id, client_msg, parse_mode="HTML", reply_markup=client_confirm_price_kb(order_id))
+        # Сохраняем ID сообщения для последующей очистки
+        if order_id not in client_order_msg_ids:
+            client_order_msg_ids[order_id] = []
+        client_order_msg_ids[order_id].append(msg_price.message_id)
     except Exception as e:
         logging.error(f"Notify client {client_id} failed: {e}")
 
@@ -1735,7 +1734,11 @@ async def custom_price_input(message: types.Message):
         f"{price_text}"
     )
     try:
-        await bot.send_message(client_id, client_msg, parse_mode="HTML", reply_markup=client_confirm_price_kb(order_id))
+        msg_price = await bot.send_message(client_id, client_msg, parse_mode="HTML", reply_markup=client_confirm_price_kb(order_id))
+        # Сохраняем ID сообщения для последующей очистки
+        if order_id not in client_order_msg_ids:
+            client_order_msg_ids[order_id] = []
+        client_order_msg_ids[order_id].append(msg_price.message_id)
     except Exception as e:
         logging.error(f"Notify client {client_id} failed: {e}")
 
@@ -1788,20 +1791,23 @@ async def client_confirm_price(callback: types.CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=None)
 
     # Показываем клиенту обычные кнопки управления поездкой
-    await bot.send_message(
+    msg = await bot.send_message(
         client_id,
         "✅ <b>Поїздку підтверджено!</b>\n"
         "Тепер ви можете зв'язатися з водієм або скасувати поїздку.",
         parse_mode="HTML",
         reply_markup=client_driver_found()
     )
+    if order_id not in client_order_msg_ids:
+        client_order_msg_ids[order_id] = []
+    client_order_msg_ids[order_id].append(msg.message_id)
 
     # Получаем driver_id (он нужен для кнопки карты)
     driver_id = order[2]
 
     # Отправляем клиенту кнопку для отслеживания водителя на карте
     try:
-        await bot.send_message(
+        msg_map = await bot.send_message(
             client_id,
             "📍 Водій у дорозі! Натисніть кнопку, щоб побачити його місцезнаходження на карті:",
             reply_markup=InlineKeyboardMarkup(
@@ -1813,6 +1819,9 @@ async def client_confirm_price(callback: types.CallbackQuery):
                 ]
             )
         )
+        if order_id not in client_order_msg_ids:
+            client_order_msg_ids[order_id] = []
+        client_order_msg_ids[order_id].append(msg_map.message_id)
     except Exception as e:
         logging.error(f"Failed to send map button to client {client_id}: {e}")
 
@@ -2016,9 +2025,26 @@ async def driver_finish(callback: types.CallbackQuery):
     client_id = order[1]
     process_finished_order(order_id)
 
-    await bot.send_message(client_id, "🏁 <b>Поїздку завершено.</b> Дякуємо!", parse_mode="HTML", reply_markup=get_main_menu(client_id))
-    await bot.send_message(client_id, "Оцініть поїздку:", reply_markup=rating_keyboard(order_id))
+    # Отправляем сообщение о завершении и оценку — только по одному разу
+    msg_finish = await bot.send_message(
+        client_id,
+        "🏁 <b>Поїздку завершено.</b> Дякуємо!",
+        parse_mode="HTML",
+        reply_markup=get_main_menu(client_id)
+    )
+    msg_rate = await bot.send_message(
+        client_id,
+        "Оцініть поїздку:",
+        reply_markup=rating_keyboard(order_id)
+    )
 
+    # Сохраняем ID для очистки
+    if order_id not in client_order_msg_ids:
+        client_order_msg_ids[order_id] = []
+    client_order_msg_ids[order_id].append(msg_finish.message_id)
+    client_order_msg_ids[order_id].append(msg_rate.message_id)
+
+    # Очередь заказов
     queued_id = activate_queued_order(driver_id)
     if queued_id:
         queued_order = get_order(queued_id)
@@ -2034,6 +2060,18 @@ async def driver_finish(callback: types.CallbackQuery):
     await callback.answer()
     chat_sessions.pop(client_id, None)
     chat_sessions.pop(driver_id, None)
+
+    # Автоочистка через 15 секунд
+    async def cleanup_client_chat():
+        await asyncio.sleep(15)
+        msg_ids = client_order_msg_ids.pop(order_id, [])
+        for msg_id in msg_ids:
+            try:
+                await bot.delete_message(client_id, msg_id)
+            except Exception as e:
+                logging.error(f"Failed to delete msg {msg_id} for client {client_id}: {e}")
+
+    asyncio.create_task(cleanup_client_chat())
 
 @dp.message(F.text.in_(["🏃 Вже йду", "⏳ Буду через 5 хв", "📍 Я на місці"]))
 async def client_fast_reply(message: types.Message):
@@ -2070,7 +2108,10 @@ async def rate_order(callback: types.CallbackQuery):
         else:
             msg = "Дякуємо за високу оцінку! Будемо раді, якщо ви залишите відгук."
         await callback.message.edit_text(f"Оцінка: {stars}⭐")
-        await bot.send_message(order[1], msg, reply_markup=review_prompt_kb(order_id))
+        sent_msg = await bot.send_message(order[1], msg, reply_markup=review_prompt_kb(order_id))
+        # Сохраняем ID сообщения для последующей очистки
+        if order_id in client_order_msg_ids:
+            client_order_msg_ids[order_id].append(sent_msg.message_id)
     except:
         pass
     await callback.answer()

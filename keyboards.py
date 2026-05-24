@@ -310,7 +310,7 @@ def client_confirm_price_kb(order_id: int) -> InlineKeyboardMarkup:
 def main_menu_admin(is_driver=False):
     keyboard = [
         [KeyboardButton(text="🚖 Замовити таксі"), KeyboardButton(text="📋 Мої поїздки")],
-        [KeyboardButton(text="🕒 Запланувати поїздку")],
+        [KeyboardButton(text="🕒 Запланувати поїздку (Тестування)")],
         [KeyboardButton(text="🎁 Мої бонуси")],
         [KeyboardButton(text="💬 Підтримка")],
     ]
