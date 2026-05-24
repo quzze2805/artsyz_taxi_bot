@@ -23,10 +23,12 @@
             throw new Error('Driver ID missing');
         }
 
-        // Инициализация карты (центр можно будет сместить после получения координат)
+        // Инициализация карты с современным стилем CartoDB Voyager
         const map = L.map('map').setView([46.0, 30.0], 13);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: 'OSM'
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd',
+            maxZoom: 20
         }).addTo(map);
 
         const driverMarker = L.marker([0, 0]).addTo(map);
@@ -34,9 +36,10 @@
 
         async function updatePosition() {
             try {
+                // Используем актуальный URL ngrok и добавляем заголовок для обхода предупреждения
                 const response = await fetch(`https://linguist-sabbath-smitten.ngrok-free.dev/get_driver_location?driver_id=${driverId}`, {
                     headers: { 'ngrok-skip-browser-warning': 'true' }
-        });
+                });
                 const data = await response.json();
                 if (data.lat && data.lon) {
                     const latlng = [data.lat, data.lon];
