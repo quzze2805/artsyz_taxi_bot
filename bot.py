@@ -29,7 +29,7 @@ from database import (init_db, add_order, get_order, accept_order,
                       cancel_planned_order, get_due_reminders, set_planned_reminded,
                       activate_planned_order,
                       get_all_started_users,
-                      get_planned_orders_to_remind, get_promo, set_planned_reminded_order)
+                      get_planned_orders_to_remind, set_planned_reminded_order, get_promo, set_promo,)
 from keyboards import *
 
 mini_app_url = "https://quzze2805.github.io/artsyz_taxi_bot/?v=6"
