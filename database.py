@@ -348,7 +348,10 @@ def get_planned_order(order_id):
 def get_client_planned_orders(client_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT id, planned_time, from_address, to_address, status FROM planned_orders WHERE client_id=? AND status="pending" ORDER BY planned_time', (client_id,))
+    c.execute('''SELECT id, planned_time, from_address, to_address, status 
+                 FROM orders 
+                 WHERE client_id=? AND is_planned=1 AND status IN ("accepted","searching")
+                 ORDER BY created_at DESC''', (client_id,))
     rows = c.fetchall()
     conn.close()
     return rows

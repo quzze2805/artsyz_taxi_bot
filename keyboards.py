@@ -5,9 +5,8 @@ def main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🚖 Замовити таксі"), KeyboardButton(text="📋 Мої поїздки")],
-            [KeyboardButton(text="🕒 Запланувати поїздку (Тестування)")],
-            [KeyboardButton(text="🎁 Мої бонуси")],
-            [KeyboardButton(text="💬 Підтримка")],
+            [KeyboardButton(text="🕒 Запланувати поїздку (Тестування)"), KeyboardButton(text="📋 Мої плани")],
+            [KeyboardButton(text="🎁 Мої бонуси"), KeyboardButton(text="💬 Підтримка")],
         ],
         resize_keyboard=True
     )
@@ -16,10 +15,8 @@ def main_menu_driver():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🚖 Замовити таксі"), KeyboardButton(text="📋 Мої поїздки")],
-            [KeyboardButton(text="🕒 Запланувати поїздку (Тестування)")],
-            [KeyboardButton(text="🎁 Мої бонуси")],
-            [KeyboardButton(text="💬 Підтримка")],
-            [KeyboardButton(text="🚘 Кабінет водія")],
+            [KeyboardButton(text="🕒 Запланувати поїздку (Тестування)"), KeyboardButton(text="📋 Мої плани")],
+            [KeyboardButton(text="🎁 Мої бонуси"), KeyboardButton(text="💬 Підтримка")],
         ],
         resize_keyboard=True
     )
@@ -90,6 +87,7 @@ def client_driver_found():
             [KeyboardButton(text="📞 Контакти водія")],
             [KeyboardButton(text="💬 Повідомлення водію")],
             [KeyboardButton(text="📡 Надіслати геопозицію"), KeyboardButton(text="❌ Скасувати поїздку")],
+            [KeyboardButton(text="🔙 В головне меню")]
         ],
         resize_keyboard=True
     )
@@ -294,7 +292,6 @@ def driver_price_kb(order_id: int) -> InlineKeyboardMarkup:
             row = []
     if row:
         buttons.append(row)
-    # Кнопка "Своя цена"
     buttons.append([InlineKeyboardButton(text="💬 Вказати свою ціну", callback_data=f"custom_price_{order_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -307,18 +304,6 @@ def client_confirm_price_kb(order_id: int) -> InlineKeyboardMarkup:
         ]
     )
 
-def main_menu_admin(is_driver=False):
-    keyboard = [
-        [KeyboardButton(text="🚖 Замовити таксі"), KeyboardButton(text="📋 Мої поїздки")],
-        [KeyboardButton(text="🕒 Запланувати поїздку (Тестування)")],
-        [KeyboardButton(text="🎁 Мої бонуси")],
-        [KeyboardButton(text="💬 Підтримка")],
-    ]
-    if is_driver:
-        keyboard.append([KeyboardButton(text="🚘 Кабінет водія")])
-    keyboard.append([KeyboardButton(text="🔐 Адмін-панель")])
-    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
-
 def promo_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -328,3 +313,38 @@ def promo_menu():
         ],
         resize_keyboard=True
     )
+
+def driver_order_actions(order_id, has_queue=False):
+    keyboard = [
+        [InlineKeyboardButton(text="💬 Повідомлення клієнту", callback_data=f"chat_{order_id}")],
+        [InlineKeyboardButton(text="📍 Запитати гео клієнта", callback_data=f"req_loc_{order_id}")],
+    ]
+    if has_queue:
+        keyboard.append([InlineKeyboardButton(text="❌ Скасувати наступне замовлення", callback_data=f"cancel_queued_{order_id}")])
+    keyboard.extend([
+        [InlineKeyboardButton(text="👋 Я на місці", callback_data=f"arrived_{order_id}")],
+        [InlineKeyboardButton(text="🛑 Завершити поїздку", callback_data=f"finish_{order_id}")],
+        [InlineKeyboardButton(text="❌ Скасувати замовлення", callback_data=f"cancel_order_{order_id}")],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def driver_pre_confirm_kb(order_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура для водителя до подтверждения клиентом или до старта поездки (для плановой)"""
+    keyboard = [
+        [InlineKeyboardButton(text="💬 Повідомлення клієнту", callback_data=f"chat_{order_id}")],
+        [InlineKeyboardButton(text="📍 Запитати гео клієнта", callback_data=f"req_loc_{order_id}")],
+        [InlineKeyboardButton(text="❌ Скасувати замовлення", callback_data=f"cancel_order_{order_id}")],
+        [InlineKeyboardButton(text="🚀 Виїхав до клієнта", callback_data=f"start_ride_{order_id}")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def main_menu_admin(is_driver=False):
+    keyboard = [
+            [KeyboardButton(text="🚖 Замовити таксі"), KeyboardButton(text="📋 Мої поїздки")],
+            [KeyboardButton(text="🕒 Запланувати поїздку (Тестування)"), KeyboardButton(text="📋 Мої плани")],
+            [KeyboardButton(text="🎁 Мої бонуси"), KeyboardButton(text="💬 Підтримка")],
+    ]
+    if is_driver:
+        keyboard.append([KeyboardButton(text="🚘 Кабінет водія")])
+    keyboard.append([KeyboardButton(text="🔐 Адмін-панель")])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
