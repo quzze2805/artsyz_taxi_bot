@@ -32,7 +32,7 @@ from database import (init_db, add_order, get_order, accept_order,
                       get_planned_orders_to_remind, set_planned_reminded_order)
 from keyboards import *
 
-mini_app_url = "https://raw.githubusercontent.com/quzze2805/artsyz_taxi_bot/main/index.html"
+mini_app_url = "https://quzze2805.github.io/artsyz_taxi_bot/?v=4"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
@@ -1745,7 +1745,7 @@ async def client_confirm_price(callback: types.CallbackQuery):
                 inline_keyboard=[
                     [InlineKeyboardButton(
                         text="🗺️ Дивитись на карті",
-                        web_app=WebAppInfo(url=f"{mini_app_url}?driver_id={driver_id}")
+                        web_app=WebAppInfo(url=f"{mini_app_url}&driver_id={driver_id}")
                     )]
                 ]
             )

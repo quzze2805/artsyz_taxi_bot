@@ -7,85 +7,61 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
-        body { margin: 0; background: #0a0a0a; color: white; font-family: sans-serif; }
-        #map { width: 100vw; height: 70vh; }
-        #log { padding: 10px; height: 30vh; overflow-y: auto; background: #111; font-size: 14px; white-space: pre-wrap; }
+        body { margin: 0; background: #0a0a0a; }
+        #map { width: 100vw; height: 100vh; }
     </style>
 </head>
 <body>
     <div id="map"></div>
-    <div id="log"></div>
     <script>
-        function debug(msg) {
-            document.getElementById('log').innerText += msg + '\n';
-            console.log(msg);
-        }
-
-        debug('Start');
-
         const params = new URLSearchParams(window.location.search);
         const driverId = params.get('driver_id');
-        debug('driverId=' + driverId);
 
         if (!driverId) {
-            debug('ERROR: No driver_id');
             alert('Невідомий водій');
             throw new Error('Driver ID missing');
         }
 
-        try {
-            const map = L.map('map').setView([46.0, 30.0], 13);
-            debug('Map created');
+        // Тёмная карта (CartoDB Dark Matter)
+        const map = L.map('map').setView([46.0, 30.0], 13);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd',
+            maxZoom: 20
+        }).addTo(map);
 
-            // Используем запасной слой OpenStreetMap (стандартный, должен грузиться везде)
-            L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                maxZoom: 19,
-                attribution: '© OpenStreetMap'
-            }).addTo(map);
-            debug('Tile layer added');
+        // Иконка машинки
+        const carIcon = L.divIcon({
+            html: '🚗',
+            className: 'car-icon',
+            iconSize: [40, 40],
+            iconAnchor: [20, 20]
+        });
 
-            const carIcon = L.divIcon({
-                html: '🚗',
-                className: 'car-icon',
-                iconSize: [40, 40],
-                iconAnchor: [20, 20]
-            });
-            debug('Car icon created');
+        const driverMarker = L.marker([0, 0], { icon: carIcon }).addTo(map);
+        let firstUpdate = true;
 
-            const driverMarker = L.marker([0, 0], { icon: carIcon }).addTo(map);
-            debug('Driver marker added');
-
-            let firstUpdate = true;
-
-            async function updatePosition() {
-                try {
-                    const response = await fetch(`https://linguist-sabbath-smitten.ngrok-free.dev/get_driver_location?driver_id=${driverId}`, {
-                        headers: { 'ngrok-skip-browser-warning': 'true' }
-                    });
-                    const data = await response.json();
-                    debug('Fetch OK: ' + JSON.stringify(data));
-                    if (data.lat && data.lon) {
-                        const latlng = [data.lat, data.lon];
-                        driverMarker.setLatLng(latlng);
-                        if (firstUpdate) {
-                            map.setView(latlng, 15);
-                            firstUpdate = false;
-                        }
-                        debug('Position updated: ' + latlng);
-                    } else {
-                        debug('No lat/lon in response');
+        async function updatePosition() {
+            try {
+                const response = await fetch(`https://linguist-sabbath-smitten.ngrok-free.dev/get_driver_location?driver_id=${driverId}`, {
+                    headers: { 'ngrok-skip-browser-warning': 'true' }
+                });
+                const data = await response.json();
+                if (data.lat && data.lon) {
+                    const latlng = [data.lat, data.lon];
+                    driverMarker.setLatLng(latlng);
+                    if (firstUpdate) {
+                        map.setView(latlng, 15);
+                        firstUpdate = false;
                     }
-                } catch (err) {
-                    debug('Fetch error: ' + err.message);
                 }
+            } catch (err) {
+                console.error(err);
             }
-
-            setInterval(updatePosition, 5000);
-            updatePosition();
-            debug('Interval set');
-        } catch (e) {
-            debug('FATAL ERROR: ' + e.message);
         }
+
+        setInterval(updatePosition, 5000);
+        updatePosition();
     </script>
 </body>
 </html>
