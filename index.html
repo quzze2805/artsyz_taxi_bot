@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
-        body { margin: 0; background: #0a0a0a; }
+        body { margin: 0; }
         #map { width: 100vw; height: 100vh; }
     </style>
 </head>
@@ -22,12 +22,11 @@
             throw new Error('Driver ID missing');
         }
 
-        // Тёмная карта (CartoDB Dark Matter)
+        // Светлая карта OpenStreetMap (чёткие дороги)
         const map = L.map('map').setView([46.0, 30.0], 13);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-            subdomains: 'abcd',
-            maxZoom: 20
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap'
         }).addTo(map);
 
         // Иконка машинки
