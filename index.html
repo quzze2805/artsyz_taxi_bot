@@ -34,7 +34,9 @@
 
         async function updatePosition() {
             try {
-                const response = await fetch(`https://linguist-sabbath-smitten.ngrok-free.dev/get_driver_location?driver_id=${driverId}`);
+                const response = await fetch(`https://linguist-sabbath-smitten.ngrok-free.dev/get_driver_location?driver_id=${driverId}`, {
+                    headers: { 'ngrok-skip-browser-warning': 'true' }
+        });
                 const data = await response.json();
                 if (data.lat && data.lon) {
                     const latlng = [data.lat, data.lon];
