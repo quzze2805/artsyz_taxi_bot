@@ -32,6 +32,8 @@ from database import (init_db, add_order, get_order, accept_order,
                       get_planned_orders_to_remind, set_planned_reminded_order)
 from keyboards import *
 
+mini_app_url = "https://raw.githubusercontent.com/quzze2805/artsyz_taxi_bot/main/index.html"
+
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -770,22 +772,30 @@ async def get_from_text(message: types.Message):
     await message.answer(f"Адреса подачі: «{message.text}»")
     await ask_destination(message)
 
+import requests
+
+FLASK_URL = "http://127.0.0.1:5000"  # локальный адрес Flask в Codespaces
+
+async def update_driver_location_to_flask(driver_id, lat, lon):
+    try:
+        requests.post(f"{FLASK_URL}/update_location", json={
+            'driver_id': driver_id,
+            'lat': lat,
+            'lon': lon,
+            'timestamp': datetime.now().isoformat()
+        }, verify=False)
+    except Exception as e:
+        logging.error(f"Failed to send location to Flask: {e}")
+
 @dp.message(F.location)
 async def location_handler(message: types.Message):
     uid = message.from_user.id
 
-    # --- НОВОЕ: Если отправитель — водитель с активным заказом, сохраняем его геопозицию ---
+    # --- Если отправитель — водитель с активным заказом, сохраняем его геопозицию ---
     order_id = get_driver_current_order(uid)
     if order_id:
-        driver_locations[uid] = {
-            'lat': message.location.latitude,
-            'lon': message.location.longitude,
-            'timestamp': datetime.now().isoformat()
-        }
-        # Не выходим из функции, чтобы не сломать остальную логику? 
-        # Но если водитель отправил гео, он не ожидает, что она будет обработана как адрес подачи.
-        # Поэтому для водителя с активным заказом мы просто сохраняем координаты и выходим,
-        # не выполняя дальнейшие проверки.
+        await update_driver_location_to_flask(uid, message.location.latitude, message.location.longitude)
+        # После сохранения координат выходим, чтобы не сработала логика для клиента
         return
 
     # --- Старая логика (остаётся без изменений) ---
@@ -1711,7 +1721,7 @@ async def client_confirm_price(callback: types.CallbackQuery):
         await callback.answer("Замовлення не знайдено або не активне.", show_alert=True)
         return
 
-    # Убираем кнопки подтверждения
+    # Убираем инлайн‑кнопки подтверждения
     await callback.message.edit_reply_markup(reply_markup=None)
 
     # Показываем клиенту обычные кнопки управления поездкой
@@ -1723,7 +1733,10 @@ async def client_confirm_price(callback: types.CallbackQuery):
         reply_markup=client_driver_found()
     )
 
-    # --- ВСТАВЬ ЭТОТ БЛОК СЮДА ---
+    # Получаем driver_id (он нужен для кнопки карты)
+    driver_id = order[2]
+
+    # Отправляем клиенту кнопку для отслеживания водителя на карте
     try:
         await bot.send_message(
             client_id,
@@ -1739,15 +1752,14 @@ async def client_confirm_price(callback: types.CallbackQuery):
         )
     except Exception as e:
         logging.error(f"Failed to send map button to client {client_id}: {e}")
-    # --- КОНЕЦ ВСТАВЛЯЕМОГО БЛОКА ---
 
     # Уведомляем водителя, что клиент подтвердил
-    driver_id = order[2]
     if driver_id:
         try:
             await bot.send_message(driver_id, "✅ Клієнт підтвердив поїздку.")
         except:
             pass
+
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("client_cancel_"))

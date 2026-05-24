@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Водій у дорозі (Debug)</title>
+    <title>Водій у дорозі</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
@@ -16,13 +16,12 @@
     <div id="map"></div>
     <div id="log"></div>
     <script>
-        // Функция для вывода отладочных сообщений на экран
         function debug(msg) {
             document.getElementById('log').innerText += msg + '\n';
             console.log(msg);
         }
 
-        debug('Start debug');
+        debug('Start');
 
         const params = new URLSearchParams(window.location.search);
         const driverId = params.get('driver_id');
@@ -38,10 +37,10 @@
             const map = L.map('map').setView([46.0, 30.0], 13);
             debug('Map created');
 
-            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-                subdomains: 'abcd',
-                maxZoom: 20
+            // Используем запасной слой OpenStreetMap (стандартный, должен грузиться везде)
+            L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '© OpenStreetMap'
             }).addTo(map);
             debug('Tile layer added');
 
