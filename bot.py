@@ -6,7 +6,7 @@ from datetime import datetime
 from dateutil import parser
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from config import BOT_TOKEN, LOGO_FILE_ID, SUPPORT_PHONE, SERVICE_NAME, ADMIN_IDS, TELEGRAM_CONTACT
 from database import (init_db, add_order, get_order, accept_order,
                       set_driver_online, get_online_drivers, get_driver_current_order,
@@ -49,6 +49,7 @@ pending_queue = {}
 pending_eta = {}
 pending_price = {}
 pending_custom_price = {}
+driver_locations = {}  # { driver_id: { 'lat': ..., 'lon': ..., 'timestamp': ... } }
 
 def get_main_menu(user_id: int):
     if user_id in ADMIN_IDS:
@@ -772,6 +773,22 @@ async def get_from_text(message: types.Message):
 @dp.message(F.location)
 async def location_handler(message: types.Message):
     uid = message.from_user.id
+
+    # --- НОВОЕ: Если отправитель — водитель с активным заказом, сохраняем его геопозицию ---
+    order_id = get_driver_current_order(uid)
+    if order_id:
+        driver_locations[uid] = {
+            'lat': message.location.latitude,
+            'lon': message.location.longitude,
+            'timestamp': datetime.now().isoformat()
+        }
+        # Не выходим из функции, чтобы не сломать остальную логику? 
+        # Но если водитель отправил гео, он не ожидает, что она будет обработана как адрес подачи.
+        # Поэтому для водителя с активным заказом мы просто сохраняем координаты и выходим,
+        # не выполняя дальнейшие проверки.
+        return
+
+    # --- Старая логика (остаётся без изменений) ---
     if uid in pending_client_geo:
         driver_id = pending_client_geo.pop(uid)
         try:
@@ -782,6 +799,7 @@ async def location_handler(message: types.Message):
         else:
             await message.answer("✅ Геопозицію надіслано водієві.", reply_markup=client_driver_found())
         return
+
     if uid in pending_driver_geo:
         client_id = pending_driver_geo.pop(uid)
         try:
@@ -793,6 +811,7 @@ async def location_handler(message: types.Message):
             await message.answer("✅ Геопозицію надіслано клієнту.",
                                  reply_markup=driver_order_actions(get_driver_current_order(uid)))
         return
+
     if uid in user_state:
         step = user_state[uid].get("step")
         if step in ("from_address", "waiting_from_text", "planned_from_address", "planned_waiting_from_text"):
@@ -1703,6 +1722,24 @@ async def client_confirm_price(callback: types.CallbackQuery):
         parse_mode="HTML",
         reply_markup=client_driver_found()
     )
+
+    # --- ВСТАВЬ ЭТОТ БЛОК СЮДА ---
+    try:
+        await bot.send_message(
+            client_id,
+            "📍 Водій у дорозі! Натисніть кнопку, щоб побачити його місцезнаходження на карті:",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="🗺️ Дивитись на карті",
+                        web_app=WebAppInfo(url=f"{mini_app_url}?driver_id={driver_id}")
+                    )]
+                ]
+            )
+        )
+    except Exception as e:
+        logging.error(f"Failed to send map button to client {client_id}: {e}")
+    # --- КОНЕЦ ВСТАВЛЯЕМОГО БЛОКА ---
 
     # Уведомляем водителя, что клиент подтвердил
     driver_id = order[2]
