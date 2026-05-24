@@ -204,6 +204,7 @@ def admin_menu():
             [KeyboardButton(text="📋 Список водіїв")],
             [KeyboardButton(text="📊 Статистика")],
             [KeyboardButton(text="📈 Статистика водіїв")],
+            [KeyboardButton(text="⚡️ Промо-акція")],
             [KeyboardButton(text="🚫 Заблокувати клієнта"), KeyboardButton(text="✅ Розблокувати клієнта")],
             [KeyboardButton(text="🔴 Завершити робочий день"), KeyboardButton(text="🟢 Розпочати робочий день")],
             [KeyboardButton(text="📢 Розсилка"), KeyboardButton(text="🔙 Вийти з адмінки")],
@@ -317,3 +318,13 @@ def main_menu_admin(is_driver=False):
         keyboard.append([KeyboardButton(text="🚘 Кабінет водія")])
     keyboard.append([KeyboardButton(text="🔐 Адмін-панель")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+def promo_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Включити промо")],
+            [KeyboardButton(text="➖ Виключити промо")],
+            [KeyboardButton(text="🔙 Назад в адмінку")]
+        ],
+        resize_keyboard=True
+    )

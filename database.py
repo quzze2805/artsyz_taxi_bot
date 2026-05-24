@@ -613,3 +613,23 @@ def get_all_drivers_stats():
         })
     conn_orders.close()
     return result
+
+# ========== Промо-акція ==========
+def set_promo(active, name=None, percent=None):
+    set_setting('promo_active', str(active))
+    if name is not None:
+        set_setting('promo_name', name)
+    if percent is not None:
+        set_setting('promo_percent', str(percent))
+
+def get_promo():
+    active = get_setting('promo_active')
+    if active is None or active != 'True':
+        return {'active': False, 'name': '', 'percent': 0}
+    name = get_setting('promo_name') or ''
+    percent_str = get_setting('promo_percent') or '0'
+    try:
+        percent = int(percent_str)
+    except:
+        percent = 0
+    return {'active': True, 'name': name, 'percent': percent}

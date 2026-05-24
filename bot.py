@@ -29,7 +29,7 @@ from database import (init_db, add_order, get_order, accept_order,
                       cancel_planned_order, get_due_reminders, set_planned_reminded,
                       activate_planned_order,
                       get_all_started_users,
-                      get_planned_orders_to_remind, set_planned_reminded_order)
+                      get_planned_orders_to_remind, get_promo, set_planned_reminded_order)
 from keyboards import *
 
 mini_app_url = "https://quzze2805.github.io/artsyz_taxi_bot/?v=6"
@@ -414,6 +414,60 @@ async def admin_broadcast_send(message: types.Message):
             pass
     await message.answer(f"✅ Розсилка виконана. Отримали: {success}/{len(users)}", reply_markup=admin_menu())
     del user_state[message.from_user.id]
+
+@dp.message(F.text == "⚡️ Промо-акція")
+async def promo_status(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    promo = get_promo()
+    if promo['active']:
+        text = f"🎉 <b>Активна промо-акція:</b>\nНазва: {promo['name']}\nЗнижка: {promo['percent']}%"
+    else:
+        text = "🚫 Промо-акція не активна."
+    await message.answer(text, parse_mode="HTML", reply_markup=promo_menu())
+
+@dp.message(F.text == "➕ Включити промо")
+async def promo_enable_prompt(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    user_state[message.from_user.id] = {"step": "promo_get_name"}
+    await message.answer("Введіть назву акції (наприклад, «Скидки вихідного дня»):")
+
+@dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "promo_get_name")
+async def promo_get_name(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    user_state[message.from_user.id]["promo_name"] = message.text.strip()
+    user_state[message.from_user.id]["step"] = "promo_get_percent"
+    await message.answer("Введіть відсоток знижки (тільки число, наприклад 20):")
+
+@dp.message(F.text, lambda msg: user_state.get(msg.from_user.id, {}).get("step") == "promo_get_percent")
+async def promo_get_percent(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        percent = int(message.text.strip())
+        if percent <= 0 or percent > 100:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Невірне значення. Введіть ціле число від 1 до 100.")
+        return
+
+    name = user_state[message.from_user.id]["promo_name"]
+    set_promo(True, name=name, percent=percent)
+    del user_state[message.from_user.id]
+    await message.answer(f"✅ Промо-акцію «{name}» ({percent}%) увімкнено!", reply_markup=admin_menu())
+
+@dp.message(F.text == "➖ Виключити промо")
+async def promo_disable(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    set_promo(False)
+    await message.answer("🚫 Промо-акцію вимкнено.", reply_markup=admin_menu())
+
+@dp.message(F.text == "🔙 Назад в адмінку")
+async def promo_back(message: types.Message):
+    await message.answer("🔐 Адмін-панель:", reply_markup=admin_menu())
 
 @dp.message(F.text, lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_broadcast")
 async def admin_broadcast_send(message: types.Message):
@@ -1513,12 +1567,16 @@ async def driver_price_callback(callback: types.CallbackQuery):
         await callback.answer("Замовлення вже не актуальне.", show_alert=True)
         return
 
-    # Проверяем скидку
+    # Проверяем скидку лояльности и промо
     discount = order[10] if len(order) > 10 else 0
+    promo = get_promo()
     price_text = ""
     if discount == 1:
         final_price = max(0, price // 2)
         price_text = f"💰 <s>{price} грн</s> ➔ <b>{final_price} грн</b> (знижка 50%)"
+    elif promo['active']:
+        final_price = max(0, price - price * promo['percent'] // 100)
+        price_text = f"💰 <s>{price} грн</s> ➔ <b>{final_price} грн</b> (🎉 {promo['name']} –{promo['percent']}%)"
     else:
         price_text = f"💰 Орієнтовна вартість: <b>{price} грн</b>"
 
@@ -1655,11 +1713,16 @@ async def custom_price_input(message: types.Message):
 
     pending_price.pop(driver_id, None)
 
+    # Проверяем скидку лояльности и промо
     discount = order[10] if len(order) > 10 else 0
+    promo = get_promo()
     price_text = ""
     if discount == 1:
         final_price = max(0, price // 2)
         price_text = f"💰 <s>{price} грн</s> ➔ <b>{final_price} грн</b> (знижка 50%)"
+    elif promo['active']:
+        final_price = max(0, price - price * promo['percent'] // 100)
+        price_text = f"💰 <s>{price} грн</s> ➔ <b>{final_price} грн</b> (🎉 {promo['name']} –{promo['percent']}%)"
     else:
         price_text = f"💰 Орієнтовна вартість: <b>{price} грн</b>"
 
