@@ -348,3 +348,11 @@ def main_menu_admin(is_driver=False):
         keyboard.append([KeyboardButton(text="🚘 Кабінет водія")])
     keyboard.append([KeyboardButton(text="🔐 Адмін-панель")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+def broadcast_cancel_kb():
+    """Клавиатура для отмены рассылки"""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Скасувати розсилку")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )

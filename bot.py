@@ -398,23 +398,51 @@ async def admin_broadcast_prompt(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         return
     user_state[message.from_user.id] = {"step": "admin_broadcast"}
-    await message.answer("Введіть повідомлення для розсилки всім користувачам, які запускали бота:")
+    await message.answer("Введіть повідомлення, фото, відео або файл для розсилки.\n"
+                         "Для скасування натисніть кнопку.",
+                         reply_markup=broadcast_cancel_kb())
 
-@dp.message(F.text, lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_broadcast")
+@dp.message(lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_broadcast")
 async def admin_broadcast_send(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    uid = message.from_user.id
+    if uid not in ADMIN_IDS:
         return
-    text = message.text.strip()
+
+    # Если нажата кнопка отмены – выходим из режима рассылки
+    if message.text == "❌ Скасувати розсилку":
+        del user_state[uid]
+        await message.answer("🚫 Розсилку скасовано.", reply_markup=admin_menu())
+        return
+
     users = get_all_started_users()
     success = 0
-    for uid in users:
+    caption = message.caption or ""
+    text = message.text or ""
+
+    # Рассылаем в зависимости от типа контента
+    for uid_target in users:
         try:
-            await bot.send_message(uid, text)
+            if message.photo:
+                # Отправляем фото с подписью (если есть)
+                await bot.send_photo(uid_target, message.photo[-1].file_id, caption=caption)
+            elif message.video:
+                await bot.send_video(uid_target, message.video.file_id, caption=caption)
+            elif message.animation:
+                await bot.send_animation(uid_target, message.animation.file_id, caption=caption)
+            elif message.document:
+                await bot.send_document(uid_target, message.document.file_id, caption=caption)
+            elif message.sticker:
+                await bot.send_sticker(uid_target, message.sticker.file_id)
+            elif message.text:
+                await bot.send_message(uid_target, text)
+            else:
+                continue  # неподдерживаемый тип пропускаем
             success += 1
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Broadcast to {uid_target} failed: {e}")
+
     await message.answer(f"✅ Розсилка виконана. Отримали: {success}/{len(users)}", reply_markup=admin_menu())
-    del user_state[message.from_user.id]
+    del user_state[uid]
 
 @dp.message(F.text == "⚡️ Промо-акція")
 async def promo_status(message: types.Message):
@@ -469,22 +497,6 @@ async def promo_disable(message: types.Message):
 @dp.message(F.text == "🔙 Назад в адмінку")
 async def promo_back(message: types.Message):
     await message.answer("🔐 Адмін-панель:", reply_markup=admin_menu())
-
-@dp.message(F.text, lambda msg: msg.from_user.id in user_state and user_state[msg.from_user.id].get("step") == "admin_broadcast")
-async def admin_broadcast_send(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    text = message.text.strip()
-    users = get_all_started_users()
-    success = 0
-    for uid in users:
-        try:
-            await bot.send_message(uid, text)
-            success += 1
-        except:
-            pass
-    await message.answer(f"✅ Розсилка виконана. Отримали: {success}/{len(users)}", reply_markup=admin_menu())
-    del user_state[message.from_user.id]
 
 @dp.message(F.text == "🔙 Вийти з адмінки")
 async def admin_exit(message: types.Message):
